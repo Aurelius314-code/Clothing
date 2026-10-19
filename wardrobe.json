@@ -1,0 +1,608 @@
+{
+  "title": "Vintage British Winter Wardrobe - Trondheim",
+  "source": "Vintage British Winter Wardrobe - Trondheim-1.pdf, 18 October 2026",
+  "items": [
+    {
+      "id": "W001",
+      "category": "Outerwear",
+      "name": "Heavy overcoat - British Warm / covert coat",
+      "target_quantity": 1,
+      "owned_quantity": 1,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage British Warm overcoat",
+        "vintage covert coat wool",
+        "vintage melton overcoat"
+      ],
+      "notes": "Dense melton/covert twill; fawn, camel or navy; knee or just above",
+      "enabled": true
+    },
+    {
+      "id": "W002",
+      "category": "Outerwear",
+      "name": "Duffle coat",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage Gloverall duffle coat",
+        "vintage wool duffle coat"
+      ],
+      "notes": "Heavy cloth; navy, camel or bottle green",
+      "enabled": true
+    },
+    {
+      "id": "W003",
+      "category": "Outerwear",
+      "name": "Waxed cotton jacket",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "Barbour Bedale vintage",
+        "Barbour Border wax jacket"
+      ],
+      "notes": "Must layer over tweed; inspect wax and seams",
+      "enabled": true
+    },
+    {
+      "id": "W004",
+      "category": "Outerwear",
+      "name": "Raincoat with removable wool liner",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage Burberry trench wool liner",
+        "Aquascutum raincoat wool lining",
+        "vintage Grenfell balmacaan"
+      ],
+      "notes": "Verify removable liner included",
+      "enabled": true
+    },
+    {
+      "id": "W005",
+      "category": "Tailoring",
+      "name": "Heavy tweed sport coat",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage Harris tweed sport coat",
+        "vintage Shetland tweed jacket",
+        "vintage heavy tweed blazer herringbone"
+      ],
+      "notes": "Brown/green; target >=15 oz where verifiable",
+      "enabled": true
+    },
+    {
+      "id": "W006",
+      "category": "Tailoring",
+      "name": "Lighter country jacket",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage Saxony tweed jacket",
+        "vintage hacking jacket",
+        "vintage light Shetland tweed sport coat"
+      ],
+      "notes": "Around 12 oz where stated",
+      "enabled": true
+    },
+    {
+      "id": "W007",
+      "category": "Tailoring",
+      "name": "Grey flannel three-piece suit",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage grey wool flannel 3 piece suit",
+        "vintage charcoal flannel suit waistcoat"
+      ],
+      "notes": "13-16 oz woollen flannel; mid-grey/charcoal",
+      "enabled": true
+    },
+    {
+      "id": "W008",
+      "category": "Tailoring",
+      "name": "Odd waistcoat",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage tattersall waistcoat",
+        "vintage tweed waistcoat"
+      ],
+      "notes": "Tweed or tattersall",
+      "enabled": true
+    },
+    {
+      "id": "W009",
+      "category": "Trousers",
+      "name": "Mid-grey flannel trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage high rise grey flannel pleated trousers",
+        "vintage wool flannel trousers braces"
+      ],
+      "notes": "13-16 oz; high rise, pleats, brace buttons",
+      "enabled": true
+    },
+    {
+      "id": "W010",
+      "category": "Trousers",
+      "name": "Charcoal flannel trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage charcoal flannel pleated trousers",
+        "vintage high waisted wool trousers"
+      ],
+      "notes": "13-16 oz; high rise, pleats, brace buttons",
+      "enabled": true
+    },
+    {
+      "id": "W011",
+      "category": "Trousers",
+      "name": "Cavalry twill trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage cavalry twill trousers",
+        "vintage wool cavalry twill pants"
+      ],
+      "notes": "Fawn/olive",
+      "enabled": true
+    },
+    {
+      "id": "W012",
+      "category": "Trousers",
+      "name": "Moleskin trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage moleskin trousers olive",
+        "vintage moleskin trousers brown"
+      ],
+      "notes": "Dense brushed cotton",
+      "enabled": true
+    },
+    {
+      "id": "W013",
+      "category": "Trousers",
+      "name": "Corduroy trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage high waist pleated corduroy trousers",
+        "vintage wide wale corduroy trousers"
+      ],
+      "notes": "Brown/rust/olive",
+      "enabled": true
+    },
+    {
+      "id": "W014",
+      "category": "Trousers",
+      "name": "Heavy tweed trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 4,
+      "optional": true,
+      "search_terms": [
+        "vintage heavy tweed trousers"
+      ],
+      "notes": "Cold snaps",
+      "enabled": true
+    },
+    {
+      "id": "W015",
+      "category": "Knitwear",
+      "name": "Navy Guernsey",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage Guernsey gansey jumper navy",
+        "vintage 5 ply Guernsey sweater"
+      ],
+      "notes": "Tightly knit 5-ply worsted",
+      "enabled": true
+    },
+    {
+      "id": "W016",
+      "category": "Knitwear",
+      "name": "Shetland crewnecks",
+      "target_quantity": 3,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage Shetland wool crewneck jumper",
+        "vintage Pringle Shetland sweater"
+      ],
+      "notes": "2-3; lovat/oatmeal/bottle green",
+      "enabled": true
+    },
+    {
+      "id": "W017",
+      "category": "Knitwear",
+      "name": "Cream submariner roll neck",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage submariner roll neck wool jumper",
+        "Royal Navy submariner sweater cream"
+      ],
+      "notes": "Heavy wool",
+      "enabled": true
+    },
+    {
+      "id": "W018",
+      "category": "Knitwear",
+      "name": "Fair Isle crewneck or slipover",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage Fair Isle wool slipover",
+        "vintage Fair Isle jumper"
+      ],
+      "notes": "Crewneck or vest",
+      "enabled": true
+    },
+    {
+      "id": "W019",
+      "category": "Knitwear",
+      "name": "Fine lambswool or cashmere V-neck",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage John Smedley lambswool v neck",
+        "vintage cashmere v neck jumper"
+      ],
+      "notes": "Fine enough under suit",
+      "enabled": true
+    },
+    {
+      "id": "W020",
+      "category": "Shirts",
+      "name": "Viyella tattersall shirts",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage Viyella tattersall shirt",
+        "vintage wool cotton tattersall shirt"
+      ],
+      "notes": "Wool-cotton blend",
+      "enabled": true
+    },
+    {
+      "id": "W021",
+      "category": "Shirts",
+      "name": "Brushed cotton check shirts",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage brushed cotton check shirt",
+        "vintage British country flannel shirt"
+      ],
+      "notes": "Country checks",
+      "enabled": true
+    },
+    {
+      "id": "W022",
+      "category": "Shirts",
+      "name": "Oxford cloth shirts - white and blue",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage oxford cloth button down shirt white",
+        "vintage oxford cloth button down shirt blue"
+      ],
+      "notes": "One white, one blue",
+      "enabled": true
+    },
+    {
+      "id": "W023",
+      "category": "Shirts",
+      "name": "British Army wool-flannel shirt",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage British Army KF shirt",
+        "British Army Angola wool shirt"
+      ],
+      "notes": "Inspect wear and sizing",
+      "enabled": true
+    },
+    {
+      "id": "W024",
+      "category": "Accessories",
+      "name": "Wool / knitted / regimental ties",
+      "target_quantity": 4,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage wool challis tie",
+        "vintage knitted wool tie",
+        "vintage regimental stripe tie"
+      ],
+      "notes": "3-4 ties",
+      "enabled": true
+    },
+    {
+      "id": "W025",
+      "category": "Accessories",
+      "name": "Tweed flat cap",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage tweed flat cap Harris"
+      ],
+      "notes": "",
+      "enabled": true
+    },
+    {
+      "id": "W026",
+      "category": "Accessories",
+      "name": "Fur felt trilby / snap brim",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 4,
+      "optional": false,
+      "search_terms": [
+        "vintage fur felt trilby hat",
+        "vintage felt snap brim hat"
+      ],
+      "notes": "Brown/grey",
+      "enabled": true
+    },
+    {
+      "id": "W027",
+      "category": "Accessories",
+      "name": "Wool cap comforter",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "British Army cap comforter wool"
+      ],
+      "notes": "",
+      "enabled": true
+    },
+    {
+      "id": "W028",
+      "category": "Accessories",
+      "name": "Heavy lambswool / cashmere scarf",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage cashmere scarf navy",
+        "vintage lambswool scarf camel"
+      ],
+      "notes": "Long enough to wrap twice",
+      "enabled": true
+    },
+    {
+      "id": "W029",
+      "category": "Accessories",
+      "name": "Tartan / regimental scarf",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage tartan wool scarf",
+        "vintage regimental stripe scarf"
+      ],
+      "notes": "",
+      "enabled": true
+    },
+    {
+      "id": "W030",
+      "category": "Accessories",
+      "name": "Lined leather gloves",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage Dents lined leather gloves",
+        "deerskin wool lined gloves"
+      ],
+      "notes": "Wool/cashmere lining",
+      "enabled": true
+    },
+    {
+      "id": "W031",
+      "category": "Accessories",
+      "name": "Wool gloves / mittens",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "wool mittens vintage",
+        "wool gloves vintage"
+      ],
+      "notes": "",
+      "enabled": true
+    },
+    {
+      "id": "W032",
+      "category": "Footwear",
+      "name": "Country derby boots - rubber soles",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "Trickers country derby boots commando sole",
+        "Grenson country boots Dainite"
+      ],
+      "notes": "Brown grain; storm welt; verify grip",
+      "enabled": true
+    },
+    {
+      "id": "W033",
+      "category": "Footwear",
+      "name": "Rubber-soled country brogues",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "vintage country brogue shoes rubber sole",
+        "Trickers brogue rubber sole"
+      ],
+      "notes": "",
+      "enabled": true
+    },
+    {
+      "id": "W034",
+      "category": "Footwear",
+      "name": "Green wellington boots",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "green wellington boots lined",
+        "Hunter green wellington boots"
+      ],
+      "notes": "Cold below freezing unless lined",
+      "enabled": true
+    },
+    {
+      "id": "W035",
+      "category": "Footwear",
+      "name": "Suede chukka / desert boots",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 4,
+      "optional": false,
+      "search_terms": [
+        "vintage suede chukka boots",
+        "vintage suede desert boots"
+      ],
+      "notes": "April only",
+      "enabled": true
+    },
+    {
+      "id": "W036",
+      "category": "Footwear",
+      "name": "Ice grips / brodder",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "ice grips for boots",
+        "brodder sko"
+      ],
+      "notes": "Buy functional modern item; local sourcing preferred",
+      "enabled": true
+    },
+    {
+      "id": "W037",
+      "category": "Basics",
+      "name": "Wool over-the-calf socks",
+      "target_quantity": 7,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "merino over the calf socks",
+        "wool over calf dress socks"
+      ],
+      "notes": "7 pairs; modern acceptable",
+      "enabled": true
+    },
+    {
+      "id": "W038",
+      "category": "Basics",
+      "name": "Thick boot / shooting socks",
+      "target_quantity": 3,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "wool shooting socks",
+        "heavy wool boot socks"
+      ],
+      "notes": "3 pairs",
+      "enabled": true
+    },
+    {
+      "id": "W039",
+      "category": "Basics",
+      "name": "Wool long johns and undershirt set",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "Wolsey wool long johns",
+        "merino wool base layer set"
+      ],
+      "notes": "Modern merino acceptable",
+      "enabled": true
+    },
+    {
+      "id": "W040",
+      "category": "Basics",
+      "name": "Braces",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage button braces suspenders",
+        "button on trouser braces"
+      ],
+      "notes": "2 pairs",
+      "enabled": true
+    }
+  ]
+}

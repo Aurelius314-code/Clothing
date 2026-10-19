@@ -1,0 +1,29 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# PyCharm
+.idea/
+
+# Private innstillinger
+.env
+.env.*
+!.env.example
+
+# Lokal database
+*.sqlite
+*.sqlite3
+*.db
+
+# Bilder og sikkerhetskopier
+images/
+uploads/
+backups/
+
+# Genererte rapporter
+report.html
+
+# Streamlit lokale innstillinger
+.streamlit/secrets.toml
