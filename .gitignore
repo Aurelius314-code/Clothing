@@ -27,3 +27,6 @@ report.html
 
 # Streamlit lokale innstillinger
 .streamlit/secrets.toml
+
+# Temporary file left only if a save of wardrobe.json is interrupted
+.wardrobe-*.json
