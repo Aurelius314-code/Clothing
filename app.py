@@ -2,19 +2,23 @@
 import hashlib
 import json
 import os
+import re
 import tempfile
 from urllib.parse import urlparse
 
+import requests
 import streamlit as st
 
-from watcher import (DB, CATALOG, REVIEW_STATUSES, connect, ebay_item_key, fingerprint,
-                     has_flag, is_auction_only, set_flag, utc_now)
+import measure
+from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint,
+                     has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now)
 
 st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layout='wide')
 
 PAGE_SIZE = 50
 STATUS_LABELS = {'saved': '⭐ Lagret', 'rejected': 'Avvist', 'purchased': 'Kjøpt', 'unreviewed': 'Ikke vurdert'}
 FIT_LABELS = {'good': 'God', 'needs_review': 'Må vurderes', 'poor': 'Problem / bør erstattes'}
+CONFIDENCE_LABELS = {'high': 'sikker', 'medium': 'litt usikker', 'low': '⚠️ usikker'}
 
 # Prefilled once per database. The two trousers have no wardrobe target yet: none of the
 # trouser entries in wardrobe.json describes them, so assign them in the garment register.
@@ -56,7 +60,13 @@ def safe_url(url):
     return p.scheme in ('https', 'http') and bool(p.netloc) and not p.username and not p.password
 
 
+def md(text):
+    """Escape text from eBay or DeepSeek so Streamlit shows it as written, not as markdown."""
+    return re.sub(r'([\\`*_{}\[\]()#+!|<>~])', r'\\\1', str(text or ''))
+
+
 def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
+    """Save a listing entered by hand. `url` should already be resolved if it was a share link."""
     url = url.strip()
     key = ebay_item_key(url) or 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]
     old = conn.execute('SELECT price,currency,seller,image_url FROM listings WHERE item_id=?', (key,)).fetchone()
@@ -71,9 +81,17 @@ def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
       (key, title, url, image, seller, price, currency, t, t, fingerprint(title, seller)))
     if wid:
         conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (key, wid))
-    if notes.strip():
-        conn.execute('''INSERT INTO listing_reviews(item_id,status,notes) VALUES(?,'unreviewed',?)
-          ON CONFLICT(item_id) DO UPDATE SET notes=excluded.notes''', (key, notes.strip()))
+    if image and not listing_photos(conn, key):
+        store_photos(conn, key, [measure.full_size_photo(image)])
+    notes = notes.strip()
+    if notes:
+        existing = conn.execute('SELECT notes FROM listing_reviews WHERE item_id=?', (key,)).fetchone()
+        existing = (existing[0] or '').strip() if existing else ''
+        if notes not in existing:
+            # A new note is added under the earlier ones, with the date, instead of replacing them.
+            notes = f'{existing}\n{t[:10]}: {notes}' if existing else notes
+            conn.execute('''INSERT INTO listing_reviews(item_id,status,notes) VALUES(?,'unreviewed',?)
+              ON CONFLICT(item_id) DO UPDATE SET notes=excluded.notes''', (key, notes))
     if old is None or tuple(old[:2]) != (price, currency):
         conn.execute('INSERT OR IGNORE INTO price_history(item_id,observed_at,price,currency) VALUES(?,?,?,?)', (key, t, price, currency))
     conn.commit()
@@ -172,14 +190,35 @@ with connect() as conn:
         where, args = ('', ()) if filter_status == 'Alle' else ("WHERE COALESCE(r.status,'unreviewed')=?", (filter_status,))
         total = conn.execute(f'SELECT COUNT(*) FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where}', args).fetchone()[0]
         pages = max(1, -(-total // PAGE_SIZE))
-        # No key on purpose: the label changes with the filter and count, which starts the selector back on page 1.
-        page = st.number_input(f'Side (av {pages}, {total} annonser)', 1, pages, 1) if pages > 1 else 1
+        # One remembered page per filter. The widget's label and limits never change, so Streamlit keeps
+        # the page when the count changes (for example after rejecting a listing); it only moves back
+        # when the page no longer exists.
+        page_key = f'listing_page_{filter_status}'
+        if st.session_state.get(page_key, 1) > pages:
+            st.session_state[page_key] = pages
+        if pages > 1:
+            page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages)
+            st.caption(f'Side {page} av {pages} · {total} annonser')
+        else:
+            page = 1
         rows = conn.execute(f'''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
           l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
           COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
           (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint)
           FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where}
           ORDER BY l.first_seen DESC LIMIT ? OFFSET ?''', (*args, PAGE_SIZE, (page - 1) * PAGE_SIZE)).fetchall()
+        ids = [row[0] for row in rows]
+        marks = ','.join('?' * len(ids))
+        readings, analyses, photos = {}, {}, {}
+        if ids:
+            for r in conn.execute(f'''SELECT item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note
+                    FROM listing_measurements WHERE item_id IN ({marks})''', ids):
+                readings.setdefault(r[0], []).append(r[1:])
+            analyses = {r[0]: r[1:] for r in conn.execute(
+                f'SELECT item_id,status,attempts,error FROM listing_analysis WHERE item_id IN ({marks})', ids)}
+            for item_id, photo_url in conn.execute(
+                    f'SELECT item_id,url FROM listing_photos WHERE item_id IN ({marks}) ORDER BY item_id,position', ids):
+                photos.setdefault(item_id, []).append(photo_url)
         for (iid, title, url, img, seller, price, currency, ship, ship_currency, options,
              first, last, status, notes, similar) in rows:
             with st.container(border=True):
@@ -187,7 +226,7 @@ with connect() as conn:
                 with left:
                     if img and safe_url(img): st.image(img, width='stretch')
                 with right:
-                    st.markdown(f'**{title}**')
+                    st.markdown(f'**{md(title)}**')
                     price_text = money(price, currency) + (' (gjeldende bud, auksjon)' if is_auction_only(options) else '')
                     if ship is not None:
                         price_text += f' + frakt {money(ship, ship_currency)}'
@@ -195,10 +234,29 @@ with connect() as conn:
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
                     st.caption(f'Først sett: {first} · Sist sett: {last}')
                     if similar > 1: st.warning(f'{similar} annonser med samme selger og normalisert tittel – mulig relisting, ikke bekreftet.')
+                    found = sorted(readings.get(iid, []), key=lambda r: measure.ORDER.index(r[0]))
+                    analysis = analyses.get(iid)
+                    if found:
+                        lines = []
+                        for name, value_cm, raw_value, raw_unit, flat, source, confidence, note in found:
+                            label = measure.LABELS.get(name, name) + (' (flatt)' if name in measure.WIDTHS else '')
+                            raw = f'{raw_value:g} {raw_unit}' + (', målt rundt' if name in measure.WIDTHS and not flat else '')
+                            where_from = source.replace('photo', 'bilde').replace('text', 'teksten')
+                            line = f'- {label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
+                            lines.append(line + (f' – {md(note)}' if note else ''))
+                        st.markdown('**Mål fra annonsen**\n' + '\n'.join(lines))
+                    elif analysis and analysis[0] == 'ok':
+                        st.caption('Mål fra annonsen: ingen mål vist i bildene eller teksten.')
+                    elif analysis and analysis[0] == 'error':
+                        retry = 'prøves igjen ved neste analyse' if analysis[1] < MAX_ATTEMPTS else f'gitt opp etter {MAX_ATTEMPTS} forsøk'
+                        st.caption(f'Måling feilet: {md(analysis[2])} ({retry})')
+                    shown = photos.get(iid) or ([measure.full_size_photo(img)] if img and safe_url(img) else [])
+                    if shown and st.toggle(f'Vis bilder ({len(shown)})', key='ph' + iid):
+                        st.image(shown, width=240, caption=[f'Bilde {n}' for n in range(1, len(shown) + 1)])
                     with st.form('review' + iid):
                         choice = st.selectbox('Vurdering', REVIEW_STATUSES, index=REVIEW_STATUSES.index(status) if status in REVIEW_STATUSES else 0,
                                               format_func=STATUS_LABELS.get, key='rs' + iid)
-                        comment = st.text_input('Begrunnelse / notater', value=notes, key='rn' + iid)
+                        comment = st.text_area('Begrunnelse / notater', value=notes, key='rn' + iid, height=80)
                         if st.form_submit_button('Lagre vurdering'):
                             conn.execute('''INSERT INTO listing_reviews(item_id,status,notes) VALUES(?,?,?) ON CONFLICT(item_id)
                               DO UPDATE SET status=excluded.status,notes=excluded.notes''', (iid, choice, comment))
@@ -207,7 +265,8 @@ with connect() as conn:
 
     with tabs[3]:
         st.header('Manuell annonseimport')
-        st.caption('Legg inn eBay-annonser mens vi venter på API-tilgang. Samme eBay-annonse oppdaterer den eksisterende registreringen, også om lenken har andre sporingsparametere.')
+        st.caption('Samme eBay-annonse oppdaterer den eksisterende registreringen, også om lenken har andre sporingsparametere '
+                   'eller er en delelenke fra eBay-appen (ebay.us/…, ebay.io/…). Bildene og målene hentes ved neste analyse.')
         with st.form('manual'):
             title = st.text_input('Annonsetittel *')
             url = st.text_input('Annonse-URL *')
@@ -222,6 +281,11 @@ with connect() as conn:
                 if not title.strip() or not safe_url(url): st.error('Oppgi tittel og gyldig http(s)-URL.')
                 elif image and not safe_url(image): st.error('Ugyldig bilde-URL.')
                 else:
+                    try:
+                        url = resolve_ebay_url(url.strip())
+                    except requests.RequestException:
+                        st.warning('Klarte ikke å følge delelenken, så annonsen lagres med lenken slik den er. '
+                                   'Den kan da dukke opp to ganger hvis søket finner den senere.')
                     fresh = manual_add(conn, title.strip(), url, seller, float(price), currency, image, wid, notes)
                     st.success('Ny annonse registrert.' if fresh else 'Eksisterende annonse oppdatert.')
 

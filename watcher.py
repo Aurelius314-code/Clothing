@@ -7,17 +7,22 @@ import json
 import os
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 import requests
 from dotenv import load_dotenv
+
+import measure
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
 CATALOG = ROOT / 'wardrobe.json'
 REVIEW_STATUSES = ('unreviewed', 'saved', 'rejected', 'purchased')
-ANALYZE_IMAGES = False  # set from CLI in main(); gates the DeepSeek image scan
+MAX_ATTEMPTS = 3  # a listing whose analysis keeps failing is given up after this many tries
+SHORT_LINK_HOSTS = {'ebay.us', 'ebay.io'}  # share links from the eBay app, without the item number
 # Matches both https://www.ebay.co.uk/itm/123456789012 and the older
 # https://www.ebay.com/itm/Some-Title-Words/123456789012 form, ignoring tracking parameters.
 EBAY_ITEM_URL = re.compile(r'ebay\.[a-z.]+/itm/(?:[^/?#]+/)?(\d{9,15})(?!\d)', re.IGNORECASE)
@@ -36,6 +41,22 @@ def ebay_item_key(url):
     """
     match = EBAY_ITEM_URL.search(url or '')
     return f'v1|{match.group(1)}|0' if match else None
+
+
+def resolve_ebay_url(url):
+    """Follow an eBay share link (ebay.us/..., ebay.io/...) to the listing it points to.
+
+    Other addresses are returned unchanged. Raises requests.RequestException if the link can't be followed.
+    """
+    host = urlparse(url).netloc.lower().removeprefix('www.')
+    if host not in SHORT_LINK_HOSTS:
+        return url
+    r = requests.get(url, headers=measure.BROWSER_HEADERS, allow_redirects=True, timeout=15, stream=True)
+    r.close()
+    for candidate in [r.url] + [hop.headers.get('Location', '') for hop in r.history]:
+        if ebay_item_key(candidate):
+            return candidate
+    return r.url
 
 
 def has_flag(conn, key):
@@ -57,7 +78,7 @@ def _migrate_v04(conn):
         return
     # v0.3 seeded these two trousers under W009/W010, which are the flannel trousers in wardrobe.json.
     conn.execute('''UPDATE owned_garments SET wardrobe_id=NULL WHERE
-      (wardrobe_id='W009' AND name='High-waisted pleated chinos') OR
+        (wardrobe_id='W009' AND name='High-waisted pleated chinos') OR
         (wardrobe_id='W010' AND name='Second high-waisted pleated trousers')''')
     # A register that already has garments counts as seeded, so deleting them never re-seeds.
     if conn.execute('SELECT COUNT(*) FROM owned_garments').fetchone()[0]:
@@ -87,7 +108,6 @@ def connect():
     _add_column(conn, 'listings', 'buying_options', "TEXT DEFAULT ''")
     _add_column(conn, 'listings', 'shipping_cost', 'REAL')
     _add_column(conn, 'listings', 'shipping_currency', "TEXT DEFAULT ''")
-    _add_column(conn, 'listings', 'measurements', "TEXT DEFAULT ''")
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
         item_id TEXT NOT NULL, observed_at TEXT NOT NULL, price REAL,
         currency TEXT, PRIMARY KEY(item_id, observed_at))''')
@@ -103,6 +123,19 @@ def connect():
         brand TEXT DEFAULT '', size TEXT DEFAULT '', fit TEXT DEFAULT 'good',
         notes TEXT DEFAULT '', image_url TEXT DEFAULT '', created_at TEXT NOT NULL)''')
     conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
+    # Photo reading. (Databases from the first DeepSeek version also have a listings.measurements
+    # column; it is no longer used.)
+    conn.execute('''CREATE TABLE IF NOT EXISTS listing_photos (
+        item_id TEXT NOT NULL, position INTEGER NOT NULL, url TEXT NOT NULL,
+        PRIMARY KEY(item_id, position))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS listing_analysis (
+        item_id TEXT PRIMARY KEY, status TEXT NOT NULL, analyzed_at TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, photo_count INTEGER DEFAULT 0, model TEXT DEFAULT '',
+        error TEXT DEFAULT '', raw TEXT DEFAULT '')''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS listing_measurements (
+        item_id TEXT NOT NULL, name TEXT NOT NULL, value_cm REAL NOT NULL, raw_value REAL, raw_unit TEXT,
+        flat INTEGER, source TEXT, confidence TEXT, note TEXT DEFAULT '',
+        PRIMARY KEY(item_id, name))''')
     _migrate_v04(conn)
     conn.commit()
     return conn
@@ -121,13 +154,29 @@ def token():
     return r.json()['access_token']
 
 
-def fetch(query, access_token, limit=100):
-    market = os.getenv('EBAY_MARKETPLACE_ID', 'EBAY_GB')
+def _ship_to_country():
     country = os.getenv('EBAY_SHIP_TO_COUNTRY', 'NO').strip().upper()
     if not re.fullmatch(r'[A-Z]{2}', country):
         raise RuntimeError('EBAY_SHIP_TO_COUNTRY must be a two-letter country code, for example NO')
-    headers = {'Authorization': f'Bearer {access_token}', 'X-EBAY-C-MARKETPLACE-ID': market,
-               'X-EBAY-C-ENDUSERCTX': f'contextualLocation=country%3D{country}'}
+    return country
+
+
+def _ebay_headers(access_token):
+    return {'Authorization': f'Bearer {access_token}', 'X-EBAY-C-MARKETPLACE-ID': os.getenv('EBAY_MARKETPLACE_ID', 'EBAY_GB'),
+            'X-EBAY-C-ENDUSERCTX': f'contextualLocation=country%3D{_ship_to_country()}'}
+
+
+def get_item(item_id, access_token):
+    """The full listing: every photo, the description and the item specifics."""
+    r = requests.get(f'https://api.ebay.com/buy/browse/v1/item/{quote(item_id, safe="")}',
+                     headers=_ebay_headers(access_token), timeout=45)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch(query, access_token, limit=100):
+    country = _ship_to_country()
+    headers = _ebay_headers(access_token)
     for offset in range(0, limit, 200):
         # deliveryCountry limits results to sellers who will ship to that country.
         params = {'q': query, 'limit': min(200, limit - offset), 'offset': offset,
@@ -164,73 +213,16 @@ def _cheapest_shipping(item):
     return min(quotes) if quotes else (None, '')
 
 
-def analyze_measurements(image_url):
-    """Send a listing image to DeepSeek; return JSON string of any tape measurements found."""
-    if not ANALYZE_IMAGES:
-        return ''
-    if not image_url or not image_url.startswith('https://'):
-        return ''
-    api_key = os.environ.get('DEEPSEEK_API_KEY')
-    if not api_key:
-        return ''
+def store_photos(conn, item_id, photos):
+    if photos:
+        conn.execute('DELETE FROM listing_photos WHERE item_id=?', (item_id,))
+        conn.executemany('INSERT INTO listing_photos(item_id,position,url) VALUES(?,?,?)',
+                         [(item_id, n, url) for n, url in enumerate(photos, 1)])
 
-    prompt = (
-        'Does this image show a measuring tape laid against a garment? '
-        'If yes, read the numbers visible on the tape and the unit (inches or cm). '
-        'Return ONLY JSON: {"has_tape": true/false, "measurements": [{"value": number, "unit": "in|cm"}]}. '
-        'If no tape is visible, return {"has_tape": false, "measurements": []}.'
-    )
 
-    try:
-        # 1. Download the image first (using a browser user-agent to avoid eBay blocks)
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        img_resp = requests.get(image_url, headers=headers, timeout=15)
-        img_resp.raise_for_status()
+def listing_photos(conn, item_id):
+    return [url for (url,) in conn.execute('SELECT url FROM listing_photos WHERE item_id=? ORDER BY position', (item_id,))]
 
-        # 2. Convert to base64
-        b64_image = base64.b64encode(img_resp.content).decode('utf-8')
-        mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
-        data_url = f"data:{mime_type};base64,{b64_image}"
-
-        # 3. Send to DeepSeek's vision model
-        r = requests.post(
-            'https://api.deepseek.com/v1/chat/completions',
-            headers={'Authorization': f'Bearer {api_key}'},
-            json={
-                'model': 'deepseek-flash',  # Changed to the specific vision model
-                'messages': [{'role': 'user', 'content': [
-                    {'type': 'text', 'text': prompt},
-                    {'type': 'image_url', 'image_url': {'url': data_url}},
-                ]}],
-                'thinking': {'type': 'disabled'},
-                'max_tokens': 1000,
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-
-        content = data['choices'][0]['message']['content'].strip()
-
-        if content.startswith('```'):
-            content = content.strip('`').removeprefix('json').strip()
-
-        try:
-            json.loads(content)
-            return content
-        except json.JSONDecodeError:
-            start, end = content.find('{'), content.rfind('}')
-            if start != -1 and end > start:
-                candidate = content[start:end + 1]
-                try:
-                    json.loads(candidate)
-                    return candidate
-                except json.JSONDecodeError:
-                    pass
-            return ''
-
-    except Exception as exc:
-        return ''
 
 def ingest(conn, item, wardrobe_id=None):
     item_id = item.get('itemId')
@@ -243,18 +235,19 @@ def ingest(conn, item, wardrobe_id=None):
     shipping_cost, shipping_currency = _cheapest_shipping(item)
     buying_options = ','.join(item.get('buyingOptions') or [])
     image_url = (item.get('image') or {}).get('imageUrl', '')
-    measurements = analyze_measurements(image_url)
     old = conn.execute('SELECT price,currency FROM listings WHERE item_id=?', (item_id,)).fetchone()
     conn.execute('''INSERT INTO listings(item_id,title,url,image_url,seller,price,currency,first_seen,last_seen,
-        fingerprint,buying_options,shipping_cost,shipping_currency,measurements)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        fingerprint,buying_options,shipping_cost,shipping_currency)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
         title=excluded.title,url=excluded.url,image_url=excluded.image_url,
         seller=excluded.seller,price=excluded.price,currency=excluded.currency,
         last_seen=excluded.last_seen,fingerprint=excluded.fingerprint,buying_options=excluded.buying_options,
-        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency,
-        measurements=excluded.measurements''',
-                 (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
-                  fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, measurements))
+        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency''',
+        (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
+         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency))
+    if not listing_photos(conn, item_id):
+        # The full photo list replaces these when the listing is analysed, so photo numbers stay stable.
+        store_photos(conn, item_id, measure.photos_from_item(item))
     if wardrobe_id:
         conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (item_id, wardrobe_id))
     if old is None:
@@ -272,22 +265,151 @@ def catalog():
     return json.loads(CATALOG.read_text(encoding='utf-8'))['items']
 
 
+# --- Reading measurements from photos -------------------------------------------------
+
+def garment_types(conn, items=None):
+    """item_id -> garment type ('jacket', 'trousers', ...), from the wardrobe target each listing matched."""
+    category = {x['id']: x['category'] for x in (items if items is not None else catalog())}
+    types = {}
+    for item_id, wid in conn.execute('SELECT item_id,wardrobe_id FROM matches ORDER BY rowid'):
+        kind = measure.CATEGORY_TYPES.get(category.get(wid))
+        if kind and item_id not in types:
+            types[item_id] = kind
+    return types
+
+
+def pending_analysis(conn, limit):
+    """Listings still to analyse, newest first: never analysed, or failed fewer than MAX_ATTEMPTS times.
+
+    Rejected listings and garments sold by size (accessories, shoes, basics) are left out.
+    """
+    types = garment_types(conn)
+    rows = conn.execute("""SELECT l.item_id, l.title, l.image_url FROM listings l
+        LEFT JOIN listing_analysis a ON a.item_id=l.item_id
+        LEFT JOIN listing_reviews r ON r.item_id=l.item_id
+        WHERE (a.item_id IS NULL OR (a.status='error' AND a.attempts < ?))
+          AND COALESCE(r.status,'unreviewed') != 'rejected'
+        ORDER BY l.first_seen DESC""", (MAX_ATTEMPTS,)).fetchall()
+    jobs = []
+    for item_id, title, image_url in rows:
+        if item_id in types:
+            photos = listing_photos(conn, item_id) or ([measure.full_size_photo(image_url)] if image_url else [])
+            if not photos and not item_id.startswith('v1|'):
+                continue  # added by hand from another site without a photo: nothing to read
+            jobs.append((item_id, title, types[item_id], photos))
+            if len(jobs) >= limit:
+                break
+    return jobs
+
+
+def _analyze_one(job, access_token, key, model):
+    """Runs in a worker thread: fetch the full listing, then read it. Returns (photos, readings, raw)."""
+    item_id, title, garment_type, photos = job
+    text = ''
+    if access_token and item_id.startswith('v1|'):
+        try:
+            full = get_item(item_id, access_token)
+            photos = measure.photos_from_item(full) or photos
+            text = measure.listing_text(full)
+        except requests.RequestException:
+            pass  # ended or unreachable listing: fall back to the photos stored from the search
+    if not photos and not text:
+        raise measure.AnalysisError('no photos available (the listing may have ended)')
+    readings, raw = measure.read_measurements(photos, garment_type, title, text, key, model)
+    return photos, readings, raw
+
+
+def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, model=''):
+    """Store one result. A failure never removes readings from an earlier successful analysis."""
+    store_photos(conn, item_id, photos)
+    now = utc_now()
+    if error:
+        conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error)
+            VALUES(?,'error',?,1,?,?,?) ON CONFLICT(item_id) DO UPDATE SET status='error',
+            analyzed_at=excluded.analyzed_at, attempts=listing_analysis.attempts+1, error=excluded.error""",
+                     (item_id, now, len(photos), model, error))
+        return
+    conn.execute('DELETE FROM listing_measurements WHERE item_id=?', (item_id,))
+    conn.executemany("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note)
+        VALUES(?,?,?,?,?,?,?,?,?)""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
+                                        r['source'], r['confidence'], r['note']) for r in readings or []])
+    conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error,raw)
+        VALUES(?,'ok',?,1,?,?,'',?) ON CONFLICT(item_id) DO UPDATE SET status='ok', analyzed_at=excluded.analyzed_at,
+        attempts=listing_analysis.attempts+1, photo_count=excluded.photo_count, model=excluded.model, error='', raw=excluded.raw""",
+                 (item_id, now, len(photos), model, (raw or '')[:20000]))
+
+
+def analyze_pending(conn, access_token, limit=100, workers=4):
+    """Read measurements for up to `limit` listings that have not been analysed yet. Prints progress."""
+    key, model = measure.api_key(), measure.model_name()
+    stats = {'analyzed': 0, 'with_measurements': 0, 'failed': 0}
+    if not key:
+        print('Photo analysis skipped: add DEEPSEEK_API_KEY to .env')
+        return stats
+    jobs = pending_analysis(conn, limit)
+    if not jobs:
+        print('Photo analysis: nothing new to analyse')
+        return stats
+    print(f'Analysing {len(jobs)} listing(s) with {model}...')
+    stopped = None
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_analyze_one, job, access_token, key, model): job for job in jobs}
+        for done, future in enumerate(as_completed(futures), 1):
+            item_id, title, _, photos = futures[future]
+            prefix = f'  [{done}/{len(jobs)}] {title[:60]}'
+            try:
+                used_photos, readings, raw = future.result()
+            except measure.AuthError as exc:
+                stopped = str(exc)
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            except Exception as exc:  # one listing failing must not stop the rest
+                error = str(exc) if isinstance(exc, measure.AnalysisError) else f'{type(exc).__name__}: {exc}'
+                save_analysis(conn, item_id, photos, error=error, model=model)
+                stats['failed'] += 1
+                print(f'{prefix}: FAILED - {error}')
+            else:
+                save_analysis(conn, item_id, used_photos, readings, raw, model=model)
+                stats['analyzed'] += 1
+                stats['with_measurements'] += bool(readings)
+                found = ', '.join(f"{r['name']} {r['value_cm']} cm" for r in readings) or 'no measurements shown'
+                print(f'{prefix}: {found}')
+            conn.commit()
+    conn.commit()
+    if stopped:
+        print(f'Photo analysis stopped: {stopped}')
+    return stats
+
+
+# --- Report ---------------------------------------------------------------------------
+
+REPORT_STYLE = ('body{font:15px system-ui;background:#f7f5f0;color:#222;max-width:1150px;margin:2rem auto;padding:0 1rem}'
+                'article{display:flex;gap:1.2rem;padding:1rem;background:white;border:1px solid #ddd;border-radius:12px;margin:1rem 0}'
+                'img{width:130px;height:140px;object-fit:contain}h3{margin:.3rem 0}a{color:#1f4b6e}small{color:#666}.m{color:#2d5a3d}'
+                'table{border-collapse:collapse;width:100%;background:white}td,th{padding:.5rem;border-bottom:1px solid #ddd;text-align:left}'
+                '@media(max-width:600px){img{width:90px;height:100px}}')
+
+
 def report(conn):
     items = catalog()
     by_id = {x['id']: x for x in items}
     rows = conn.execute('''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
         l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
-        COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),l.measurements,
+        COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
         (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint) AS similar
         FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
         ORDER BY l.first_seen DESC LIMIT 2000''').fetchall()
     matched = {}
     for item_id, wid in conn.execute('SELECT item_id,wardrobe_id FROM matches'):
         matched.setdefault(item_id, []).append(wid)
+    readings = {}
+    for item_id, name, value_cm, source, confidence in conn.execute(
+            'SELECT item_id,name,value_cm,source,confidence FROM listing_measurements'):
+        readings.setdefault(item_id, []).append((name, value_cm, source, confidence))
     esc = lambda v: html.escape(str(v if v is not None else ''), quote=True)
     cards = []
     for (item_id, title, url, img, seller, price, currency, ship, ship_currency, options,
-         first, last, status, notes,measurements, similar) in rows:
+         first, last, status, notes, similar) in rows:
         labels = ', '.join(by_id[x]['name'] for x in matched.get(item_id, []) if x in by_id)
         safe_url = url if (url or '').startswith('https://') else '#'
         safe_img = img if (img or '').startswith('https://') else ''
@@ -296,18 +418,20 @@ def report(conn):
             price_text += ' (current bid)'
         shipping_text = f' + {ship:.2f} {ship_currency} shipping' if ship is not None else ''
         relist = f' · Possible relisting ({similar} with same seller and title)' if similar > 1 else ''
-        measure_text = ''
-        if measurements and 'has_tape": true' in measurements:
-            try:
-                m_data = json.loads(measurements)
-                if m_data.get('measurements'):
-                    vals = ', '.join(f"{m['value']} {m['unit']}" for m in m_data['measurements'])
-                    measure_text = f' 📏 <strong>Measured: {esc(vals)}</strong>'
-            except Exception:
-                pass
-        cards.append(f'<article><img loading="lazy" src="{esc(safe_img)}" alt=""><div><h3><a href="{esc(safe_url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a></h3>{measure_text}<p><strong>{esc(price_text)}</strong>{esc(shipping_text)} · {esc(seller)} · {esc(status)}</p><p>{esc(labels)}</p><small>First: {esc(first)} · Last: {esc(last)}{esc(relist)} · {esc(notes)}</small></div></article>')
+        found = sorted(readings.get(item_id, []), key=lambda r: measure.ORDER.index(r[0]))
+        measured = ''
+        if found:
+            parts = [f"{name.replace('_', ' ')}{' (flat)' if name in measure.WIDTHS else ''} {value:.1f} cm"
+                     f"{' ?' if confidence == 'low' else ''} [{source}]" for name, value, source, confidence in found]
+            measured = f'<p class="m">Measured: {esc(" · ".join(parts))}</p>'
+        cards.append(f'<article><img loading="lazy" src="{esc(safe_img)}" alt=""><div><h3><a href="{esc(safe_url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a></h3><p><strong>{esc(price_text)}</strong>{esc(shipping_text)} · {esc(seller)} · {esc(status)}</p>{measured}<p>{esc(labels)}</p><small>First: {esc(first)} · Last: {esc(last)}{esc(relist)} · {esc(notes)}</small></div></article>')
     inventory = ''.join(f'<tr><td>{esc(x["category"])}</td><td>{esc(x["name"])}</td><td>{esc(x["owned_quantity"])}/{esc(x["target_quantity"])}</td><td>{esc(x["priority"])}</td></tr>' for x in items)
-    page = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vintage Wardrobe Watcher</title><style>body{font:15px system-ui;background:#f7f5f0;color:#222;max-width:1150px;margin:2rem auto;padding:0 1rem}article{display:flex;gap:1.2rem;padding:1rem;background:white;border:1px solid #ddd;border-radius:12px;margin:1rem 0}img{width:130px;height:140px;object-fit:contain}h3{margin:.3rem 0}a{color:#1f4b6e}small{color:#666}table{border-collapse:collapse;width:100%;background:white}td,th{padding:.5rem;border-bottom:1px solid #ddd;text-align:left}@media(max-width:600px){img{width:90px;height:100px}}</style><h1>Vintage Wardrobe Watcher</h1><p>Local archive. Similarity flags are possible relistings, not proof. Search matches are candidates, not verified fits.</p><h2>Wardrobe plan</h2><table><tr><th>Category</th><th>Garment</th><th>Owned / target</th><th>Priority (1 highest)</th></tr>''' + inventory + '</table><h2>Archived listings</h2>' + '\n'.join(cards) + '</html>'
+    page = ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>Vintage Wardrobe Watcher</title><style>{REPORT_STYLE}</style><h1>Vintage Wardrobe Watcher</h1>'
+            '<p>Local archive. Similarity flags are possible relistings, not proof. Measurements are read from each listing by DeepSeek; '
+            '"?" marks an uncertain reading and [photo N] says which photo to check.</p>'
+            '<h2>Wardrobe plan</h2><table><tr><th>Category</th><th>Garment</th><th>Owned / target</th><th>Priority (1 highest)</th></tr>'
+            + inventory + '</table><h2>Archived listings</h2>' + '\n'.join(cards) + '</html>')
     path = ROOT / 'report.html'
     path.write_text(page, encoding='utf-8')
     return path
@@ -315,15 +439,14 @@ def report(conn):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--report-only', action='store_true')
+    parser.add_argument('--report-only', action='store_true', help='No eBay search; with --analyze-images, only analyse')
     parser.add_argument('--limit-per-query', type=int, default=40)
     parser.add_argument('--max-queries', type=int, default=0, help='0 means all enabled queries')
     parser.add_argument('--review', nargs=3, metavar=('ITEM_ID', 'STATUS', 'NOTES'), help='Set status: ' + '/'.join(REVIEW_STATUSES))
     parser.add_argument('--analyze-images', action='store_true',
-                        help='Send listing images to DeepSeek to read measuring tapes')
+                        help='Read measurements from listing photos with DeepSeek (each listing is analysed once)')
+    parser.add_argument('--analyze-limit', type=int, default=100, help='Most listings to analyse in one run (default 100)')
     args = parser.parse_args()
-    global ANALYZE_IMAGES
-    ANALYZE_IMAGES = args.analyze_images
     load_dotenv(ROOT / '.env')
     with connect() as conn:
         if args.review:
@@ -334,7 +457,10 @@ def main():
                 parser.error('Unknown item ID')
             conn.execute('INSERT INTO listing_reviews VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET status=excluded.status,notes=excluded.notes', (item_id, status, notes))
             conn.commit()
-        elif not args.report_only:
+            print('Report:', report(conn))
+            return
+        access_token = None
+        if not args.report_only:
             access_token = token()
             stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
             searches = [(x['id'], q) for x in catalog() if x['enabled'] and x['owned_quantity'] < x['target_quantity'] for q in x['search_terms']]
@@ -348,6 +474,13 @@ def main():
                 except requests.RequestException as exc:
                     print(f'API error for {query!r}: {exc}')
             print(stats)
+        if args.analyze_images:
+            if access_token is None:
+                try:
+                    access_token = token()
+                except (RuntimeError, requests.RequestException) as exc:
+                    print(f'No eBay access ({exc}); analysing stored photos only, without descriptions')
+            print(analyze_pending(conn, access_token, args.analyze_limit))
         print('Report:', report(conn))
 
 
