@@ -137,8 +137,8 @@ def build_prompt(garment_type, title, text):
         '- The measurement is the reading on the tape where it meets the far edge of the garment. '
         'Other numbers printed along the tape are not measurements.\n'
         '- The tape should start at 0 at the near edge. If it starts elsewhere, subtract the starting value; '
-        'if you cannot see where it starts or ends, give your best reading with confidence "low" and say why in the note.\n'
-        '- If the garment is folded or stretched, or the tape runs at a slant, use confidence "medium" or "low" and say why.\n\n'
+        'if you cannot see where it starts or ends, do not report a numerical photo measurement.\n'
+        '- For photo measurements, verify the tape zero/start, the garment endpoint, and legible scale.\n'\n        '- Set start_visible, end_visible, scale_legible to true only when each is clearly visible.\n'\n        '- Set evidence_status to "verified" only when all three are true; otherwise "ambiguous".\n'\n        '- Do not return numerical photo measurements with ambiguous evidence.\n'\n        '- If the garment is folded or stretched, or the tape runs at a slant, use confidence "medium" or "low" and say why.\n\n'
         'Other rules:\n'
         '- "flat" is true when the measurement goes one layer across a garment lying flat (most tape photos, '
         '"pit to pit", "flat waist"); false when it goes all the way round (for example "waist 34 inches" or "chest 42").\n'
@@ -147,7 +147,7 @@ def build_prompt(garment_type, title, text):
         '- Leave out any measurement the listing does not show. Never estimate one.\n\n'
         'Reply with JSON only, in this form:\n'
         '{"measurements": [{"name": "pit_to_pit", "value": 21.5, "unit": "in", "flat": true, '
-        '"source": "photo 3", "confidence": "high", "note": ""}]}\n'
+        '"source": "photo 3", "confidence": "high", "start_visible": true, "end_visible": true, "scale_legible": true, "evidence_status": "verified", "note": ""}]}\n'
         f'"name" is one of: {names}. "unit" is "in" or "cm". "source" is "photo N" or "text". '
         '"confidence" is "high", "medium" or "low". If the listing shows none of them, reply {"measurements": []}.'
     )
@@ -260,7 +260,7 @@ def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_
         reply = r.json()['choices'][0]['message']['content'] or ''
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise AnalysisError('unexpected reply from DeepSeek') from exc
-    return parse_readings(reply, garment_type), reply
+    from measurement_gate import filter_supported_readings\n    readings = parse_readings(reply, garment_type)\n    accepted, rejected = filter_supported_readings(readings, reply)\n    # Preserve rejection reasons in the raw audit record without changing DB schema.\n    if rejected:\n        try:\n            audit = _json_object(reply)\n            audit["rejected_photo_measurements"] = rejected\n            reply = json.dumps(audit, ensure_ascii=False)\n        except (AnalysisError, TypeError, ValueError):\n            pass\n    return accepted, reply
 
 
 def api_key():
