@@ -1,0 +1,2 @@
+case_id,image_url,garment_type,expected_has_tape,expected_type,expected_value,expected_unit
+sample01,https://i.ebayimg.com/images/g/JCoAAeSw8ZZq0zY0/s-l1600.webp,sweater,true,,, 
