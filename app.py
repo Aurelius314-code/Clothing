@@ -268,7 +268,7 @@ with connect() as conn:
         marks = ','.join('?' * len(ids))
         readings, analyses, photos = {}, {}, {}
         if ids:
-            for r in conn.execute(f'''SELECT item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note
+            for r in conn.execute(f'''SELECT item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status
                     FROM listing_measurements WHERE item_id IN ({marks})''', ids):
                 readings.setdefault(r[0], []).append(r[1:])
             analyses = {r[0]: r[1:] for r in conn.execute(
@@ -299,18 +299,19 @@ with connect() as conn:
                     if found:
                         lines = []
                         wanted = targets.get(types.get(iid), {})
-                        for name, value_cm, raw_value, raw_unit, flat, source, confidence, note in found:
+                        for name, value_cm, raw_value, raw_unit, flat, source, confidence, note, verification_status in found:
                             label = measure.LABELS.get(name, name) + (' (flatt)' if name in measure.WIDTHS else '')
                             raw = f'{raw_value:g} {raw_unit}' + (', målt rundt' if name in measure.WIDTHS and not flat else '')
                             where_from = source.replace('photo', 'bilde').replace('text', 'teksten')
                             dot = fit.DOTS[verdict.per_reading[name][0]] + ' ' if name in verdict.per_reading else ''
-                            line = f'- {dot}{label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
+                            status_text = {'provisional': 'AI-estimat – ikke verifisert', 'seller_unverified': 'Oppgitt av selger – ikke verifisert', 'legacy_unverified': 'Eldre måling – ikke verifisert', 'human_verified': 'Manuelt verifisert'}.get(verification_status, 'Ikke verifisert')
+                            line = f'- {dot}{label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {status_text} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
                             if name in wanted:
                                 low, high = wanted[name]
                                 line += ' · mål ' + (f'{low:g}–{high:g}' if low is not None and high is not None
                                                      else f'minst {low:g}' if low is not None else f'høyst {high:g}') + ' cm'
                             lines.append(line + (f' – {md(note)}' if note else ''))
-                        st.markdown('**Mål fra annonsen**\n' + '\n'.join(lines))
+                        st.markdown('**Mål fra annonsen (AI-mål er ikke verifiserte passformmål)**\n' + '\n'.join(lines))
                     elif analysis and analysis[0] == 'ok':
                         st.caption('Mål fra annonsen: ingen mål vist i bildene eller teksten.')
                     elif analysis and analysis[0] == 'error':

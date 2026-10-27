@@ -30,3 +30,7 @@ report.html
 
 # Temporary file left only if a save of wardrobe.json is interrupted
 .wardrobe-*.json
+
+# Local measurement benchmark datasets and outputs
+measurement_cases.csv
+measurement_results.json

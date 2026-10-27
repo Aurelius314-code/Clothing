@@ -140,6 +140,7 @@ def connect():
     conn.execute('''CREATE TABLE IF NOT EXISTS fit_targets (
         garment_type TEXT NOT NULL, name TEXT NOT NULL, min_cm REAL, max_cm REAL,
         PRIMARY KEY(garment_type, name))''')
+    _add_column(conn, 'listing_measurements', 'verification_status', "TEXT NOT NULL DEFAULT 'legacy_unverified'")
     _migrate_v04(conn)
     conn.commit()
     return conn
@@ -334,9 +335,9 @@ def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, mode
                      (item_id, now, len(photos), model, error))
         return
     conn.execute('DELETE FROM listing_measurements WHERE item_id=?', (item_id,))
-    conn.executemany("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note)
-        VALUES(?,?,?,?,?,?,?,?,?)""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
-                                        r['source'], r['confidence'], r['note']) for r in readings or []])
+    conn.executemany("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status)
+        VALUES(?,?,?,?,?,?,?,?,?,?)""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
+                                        r['source'], r['confidence'], r['note'], 'provisional' if r.get('source', '').startswith('photo ') else 'seller_unverified') for r in readings or []])
     conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error,raw)
         VALUES(?,'ok',?,1,?,?,'',?) ON CONFLICT(item_id) DO UPDATE SET status='ok', analyzed_at=excluded.analyzed_at,
         attempts=listing_analysis.attempts+1, photo_count=excluded.photo_count, model=excluded.model, error='', raw=excluded.raw""",
