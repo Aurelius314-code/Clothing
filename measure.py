@@ -276,3 +276,11 @@ def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_
         except (AnalysisError, TypeError, ValueError):
             pass
     return accepted, reply
+
+
+def api_key():
+    return os.environ.get('DEEPSEEK_API_KEY', '').strip()
+
+
+def model_name():
+    return os.environ.get('DEEPSEEK_MODEL', '').strip() or DEFAULT_MODEL
