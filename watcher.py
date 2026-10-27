@@ -136,6 +136,10 @@ def connect():
         item_id TEXT NOT NULL, name TEXT NOT NULL, value_cm REAL NOT NULL, raw_value REAL, raw_unit TEXT,
         flat INTEGER, source TEXT, confidence TEXT, note TEXT DEFAULT '',
         PRIMARY KEY(item_id, name))''')
+    # Your own target ranges for the traffic light, in cm with widths flat.
+    conn.execute('''CREATE TABLE IF NOT EXISTS fit_targets (
+        garment_type TEXT NOT NULL, name TEXT NOT NULL, min_cm REAL, max_cm REAL,
+        PRIMARY KEY(garment_type, name))''')
     _add_column(conn, 'listing_measurements', 'verification_status', "TEXT NOT NULL DEFAULT 'legacy_unverified'")
     _migrate_v04(conn)
     conn.commit()
@@ -270,10 +274,10 @@ def catalog():
 
 def garment_types(conn, items=None):
     """item_id -> garment type ('jacket', 'trousers', ...), from the wardrobe target each listing matched."""
-    category = {x['id']: x['category'] for x in (items if items is not None else catalog())}
+    kind_of = {x['id']: measure.garment_type_for(x) for x in (items if items is not None else catalog())}
     types = {}
     for item_id, wid in conn.execute('SELECT item_id,wardrobe_id FROM matches ORDER BY rowid'):
-        kind = measure.CATEGORY_TYPES.get(category.get(wid))
+        kind = kind_of.get(wid)
         if kind and item_id not in types:
             types[item_id] = kind
     return types
