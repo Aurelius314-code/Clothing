@@ -1,4 +1,4 @@
-# Vintage Wardrobe Watcher v0.6 – Windows / PyCharm
+# Vintage Wardrobe Watcher v0.7 – Windows / PyCharm
 
 ## Install
 Open the folder in PyCharm. In the PyCharm terminal with the project interpreter active:
@@ -24,7 +24,8 @@ With `--analyze-images`, each listing found for a jacket, coat, trousers, knitwe
 
 - The app fetches the full listing from eBay: every photo at full size, the description and the item specifics.
 - DeepSeek reads the measurements for that type of garment (for example pit to pit, shoulders, sleeve and back length for a jacket), from the tape photos and the text. For each one it says which photo it came from, whether it was measured flat or all the way round, and how sure it is.
-- The app converts everything to cm, with widths stored flat, and shows it on the listing in **Annonser**, next to the photos. Uncertain readings are marked so you know which photo to check.
+- DeepSeek also says, for each photo reading, whether both ends of the tape and the scale are clearly visible. Readings where they aren't are marked uncertain. Set `STRICT_PHOTO_EVIDENCE=1` in `.env` to drop them instead.
+- The app converts everything to cm, with widths stored flat, and shows it on the listing in **Annonser**, next to the photos, with where it came from: *AI-estimat* (read from a photo) or *Oppgitt av selger* (from the text). Neither is verified, and uncertain readings are marked so you know which photo to check.
 
 Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to change it). Listings already analysed are not sent again, rejected listings are skipped, and accessories, shoes and basics are left out because they are bought by size. A failed analysis is shown in the app and retried on the next run, up to 3 times. A wrong key or an empty DeepSeek balance stops the analysis with a message.
 
@@ -48,11 +49,20 @@ python test_one.py https://www.ebay.co.uk/itm/123456789012 trousers
 python check.py                                     # how many listings are analysed, latest readings and errors
 ```
 
+## Checking how good the readings are
+
+The `eval` folder has a benchmark that scores DeepSeek's readings against photos you have measured yourself, and can compare the strict and lenient settings. In a first test on two real listings, a second, blinded look at the same photos could not confirm any of the four readings, so treat them as unverified until the benchmark has been run. See `eval/README.md`.
+
+```powershell
+python -m pytest -q tests eval/tests                 # offline tests, no API key needed
+```
+
 ## Upgrading
 1. Close the program and **back up `wardrobe.sqlite3`**.
 2. In PyCharm, **Git → Pull**, then run `python -m pip install -r requirements.txt`.
 3. Keep your own `wardrobe.json`, `wardrobe.sqlite3` and `.env`. New tables are added on first start; nothing is removed.
 4. From v0.5: coats and outerwear now have their own targets, separate from jackets, because they are worn over a jacket.
+5. From v0.6: readings already stored are labelled *Eldre måling* (older reading); new analyses get the new labels.
 
 From v0.3, the first start also fixes the wardrobe targets of the two seeded pleated trousers (assign them in the garment register), re-keys hand-entered eBay listings to their item number, and moves listing notes to the reviews.
 
@@ -66,6 +76,7 @@ From the first DeepSeek version: its readings were lists of numbers from the tap
 - eBay API search that only returns sellers who ship to `EBAY_SHIP_TO_COUNTRY`, stores the cheapest shipping quote, and keeps auction bid changes out of the price history.
 - Measurements read from listing photos and text by DeepSeek, shown in the app and in `report.html`.
 - Traffic light per listing against your own target ranges, with filtering and sorting by colour.
+- A benchmark and diagnostics for the photo reading in `eval/`.
 
 ## Important limitations
 - Reading a tape in a photo can go wrong when the photo is blurry, angled or the tape doesn't start at the garment's edge. Check the photo behind the measurements that matter before buying, especially readings marked uncertain.

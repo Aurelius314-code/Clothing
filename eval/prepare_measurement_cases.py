@@ -1,18 +1,17 @@
 """Build a local review sheet from real eBay item IDs using the existing Browse API.
 
 Does not write SQLite or send images to DeepSeek. Labels remain empty until manually verified.
-Run: python prepare_measurement_cases.py
+Run from the project folder: python eval/prepare_measurement_cases.py
 """
 import csv
 import json
-from pathlib import Path
 
 from dotenv import load_dotenv
 
+from _paths import EVAL_DIR, ROOT
 import measure
 import watcher
 
-ROOT = Path(__file__).resolve().parent
 CANDIDATES = [
     ("cordings-jacket", "800346841273", "jacket"),
     ("burberry-trousers", "168178929667", "trousers"),
@@ -22,7 +21,7 @@ FIELDS = ["case_id", "garment_type", "title", "description", "photos", "expected
 
 def main():
     load_dotenv(ROOT / ".env")
-    output = ROOT / "measurement_cases.csv"
+    output = EVAL_DIR / "measurement_cases.csv"
     if output.exists():
         raise SystemExit(f"{output} already exists; refusing to overwrite manual labels.")
     access_token = watcher.token()

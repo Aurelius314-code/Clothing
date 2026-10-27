@@ -3,7 +3,6 @@
 The original parser stays backward compatible for offline regression tests.
 Production extraction only accepts photo readings with explicit endpoint evidence.
 """
-import json
 import re
 
 

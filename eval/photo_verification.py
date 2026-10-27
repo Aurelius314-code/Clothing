@@ -3,11 +3,11 @@
 No listing title, description, garment size, or first-pass numerical value is sent.
 This is a diagnostic tool; its outputs must not be marked human-verified.
 """
-import json
 import re
 
 import requests
 
+import _paths  # noqa: F401  (makes the app's measure.py importable)
 import measure
 
 
