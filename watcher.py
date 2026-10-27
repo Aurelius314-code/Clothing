@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
 CATALOG = ROOT / 'wardrobe.json'
 REVIEW_STATUSES = ('unreviewed', 'saved', 'rejected', 'purchased')
-
+ANALYZE_IMAGES = False  # set from CLI in main(); gates the DeepSeek image scan
 # Matches both https://www.ebay.co.uk/itm/123456789012 and the older
 # https://www.ebay.com/itm/Some-Title-Words/123456789012 form, ignoring tracking parameters.
 EBAY_ITEM_URL = re.compile(r'ebay\.[a-z.]+/itm/(?:[^/?#]+/)?(\d{9,15})(?!\d)', re.IGNORECASE)
@@ -87,6 +87,7 @@ def connect():
     _add_column(conn, 'listings', 'buying_options', "TEXT DEFAULT ''")
     _add_column(conn, 'listings', 'shipping_cost', 'REAL')
     _add_column(conn, 'listings', 'shipping_currency', "TEXT DEFAULT ''")
+    _add_column(conn, 'listings', 'measurements', "TEXT DEFAULT ''")
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
         item_id TEXT NOT NULL, observed_at TEXT NOT NULL, price REAL,
         currency TEXT, PRIMARY KEY(item_id, observed_at))''')
@@ -163,6 +164,73 @@ def _cheapest_shipping(item):
     return min(quotes) if quotes else (None, '')
 
 
+def analyze_measurements(image_url):
+    """Send a listing image to DeepSeek; return JSON string of any tape measurements found."""
+    if not ANALYZE_IMAGES:
+        return ''
+    if not image_url or not image_url.startswith('https://'):
+        return ''
+    api_key = os.environ.get('DEEPSEEK_API_KEY')
+    if not api_key:
+        return ''
+
+    prompt = (
+        'Does this image show a measuring tape laid against a garment? '
+        'If yes, read the numbers visible on the tape and the unit (inches or cm). '
+        'Return ONLY JSON: {"has_tape": true/false, "measurements": [{"value": number, "unit": "in|cm"}]}. '
+        'If no tape is visible, return {"has_tape": false, "measurements": []}.'
+    )
+
+    try:
+        # 1. Download the image first (using a browser user-agent to avoid eBay blocks)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        img_resp = requests.get(image_url, headers=headers, timeout=15)
+        img_resp.raise_for_status()
+
+        # 2. Convert to base64
+        b64_image = base64.b64encode(img_resp.content).decode('utf-8')
+        mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+        data_url = f"data:{mime_type};base64,{b64_image}"
+
+        # 3. Send to DeepSeek's vision model
+        r = requests.post(
+            'https://api.deepseek.com/v1/chat/completions',
+            headers={'Authorization': f'Bearer {api_key}'},
+            json={
+                'model': 'deepseek-flash',  # Changed to the specific vision model
+                'messages': [{'role': 'user', 'content': [
+                    {'type': 'text', 'text': prompt},
+                    {'type': 'image_url', 'image_url': {'url': data_url}},
+                ]}],
+                'max_tokens': 300,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        content = r.json()['choices'][0]['message']['content'].strip()
+        print(f"DEBUG RAW RESPONSE: {repr(content)}")
+
+        if content.startswith('```'):
+            content = content.strip('`').removeprefix('json').strip()
+
+        try:
+            json.loads(content)
+            return content
+        except json.JSONDecodeError:
+            start, end = content.find('{'), content.rfind('}')
+            if start != -1 and end > start:
+                candidate = content[start:end + 1]
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except json.JSONDecodeError:
+                    pass
+            return ''
+
+    except Exception as exc:
+        print(f"DEBUG EXCEPTION: {type(exc).__name__}: {exc}")
+        return ''
+
 def ingest(conn, item, wardrobe_id=None):
     item_id = item.get('itemId')
     if not item_id:
@@ -174,16 +242,18 @@ def ingest(conn, item, wardrobe_id=None):
     shipping_cost, shipping_currency = _cheapest_shipping(item)
     buying_options = ','.join(item.get('buyingOptions') or [])
     image_url = (item.get('image') or {}).get('imageUrl', '')
+    measurements = analyze_measurements(image_url)
     old = conn.execute('SELECT price,currency FROM listings WHERE item_id=?', (item_id,)).fetchone()
     conn.execute('''INSERT INTO listings(item_id,title,url,image_url,seller,price,currency,first_seen,last_seen,
-        fingerprint,buying_options,shipping_cost,shipping_currency)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        fingerprint,buying_options,shipping_cost,shipping_currency,measurements)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
         title=excluded.title,url=excluded.url,image_url=excluded.image_url,
         seller=excluded.seller,price=excluded.price,currency=excluded.currency,
         last_seen=excluded.last_seen,fingerprint=excluded.fingerprint,buying_options=excluded.buying_options,
-        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency''',
-        (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
-         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency))
+        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency,
+        measurements=excluded.measurements''',
+                 (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
+                  fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, measurements))
     if wardrobe_id:
         conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (item_id, wardrobe_id))
     if old is None:
@@ -239,7 +309,11 @@ def main():
     parser.add_argument('--limit-per-query', type=int, default=40)
     parser.add_argument('--max-queries', type=int, default=0, help='0 means all enabled queries')
     parser.add_argument('--review', nargs=3, metavar=('ITEM_ID', 'STATUS', 'NOTES'), help='Set status: ' + '/'.join(REVIEW_STATUSES))
+    parser.add_argument('--analyze-images', action='store_true',
+                        help='Send listing images to DeepSeek to read measuring tapes')
     args = parser.parse_args()
+    global ANALYZE_IMAGES
+    ANALYZE_IMAGES = args.analyze_images
     load_dotenv(ROOT / '.env')
     with connect() as conn:
         if args.review:
