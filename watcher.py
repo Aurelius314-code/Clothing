@@ -57,7 +57,7 @@ def _migrate_v04(conn):
         return
     # v0.3 seeded these two trousers under W009/W010, which are the flannel trousers in wardrobe.json.
     conn.execute('''UPDATE owned_garments SET wardrobe_id=NULL WHERE
-        (wardrobe_id='W009' AND name='High-waisted pleated chinos') OR
+      (wardrobe_id='W009' AND name='High-waisted pleated chinos') OR
         (wardrobe_id='W010' AND name='Second high-waisted pleated trousers')''')
     # A register that already has garments counts as seeded, so deleting them never re-seeds.
     if conn.execute('SELECT COUNT(*) FROM owned_garments').fetchone()[0]:
@@ -202,13 +202,15 @@ def analyze_measurements(image_url):
                     {'type': 'text', 'text': prompt},
                     {'type': 'image_url', 'image_url': {'url': data_url}},
                 ]}],
-                'max_tokens': 300,
+                'thinking': {'type': 'disabled'},
+                'max_tokens': 1000,
             },
             timeout=30,
         )
         r.raise_for_status()
-        content = r.json()['choices'][0]['message']['content'].strip()
-        print(f"DEBUG RAW RESPONSE: {repr(content)}")
+        data = r.json()
+
+        content = data['choices'][0]['message']['content'].strip()
 
         if content.startswith('```'):
             content = content.strip('`').removeprefix('json').strip()
@@ -228,7 +230,6 @@ def analyze_measurements(image_url):
             return ''
 
     except Exception as exc:
-        print(f"DEBUG EXCEPTION: {type(exc).__name__}: {exc}")
         return ''
 
 def ingest(conn, item, wardrobe_id=None):
@@ -276,7 +277,7 @@ def report(conn):
     by_id = {x['id']: x for x in items}
     rows = conn.execute('''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
         l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
-        COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
+        COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),l.measurements,
         (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint) AS similar
         FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
         ORDER BY l.first_seen DESC LIMIT 2000''').fetchall()
@@ -286,7 +287,7 @@ def report(conn):
     esc = lambda v: html.escape(str(v if v is not None else ''), quote=True)
     cards = []
     for (item_id, title, url, img, seller, price, currency, ship, ship_currency, options,
-         first, last, status, notes, similar) in rows:
+         first, last, status, notes,measurements, similar) in rows:
         labels = ', '.join(by_id[x]['name'] for x in matched.get(item_id, []) if x in by_id)
         safe_url = url if (url or '').startswith('https://') else '#'
         safe_img = img if (img or '').startswith('https://') else ''
@@ -295,7 +296,16 @@ def report(conn):
             price_text += ' (current bid)'
         shipping_text = f' + {ship:.2f} {ship_currency} shipping' if ship is not None else ''
         relist = f' · Possible relisting ({similar} with same seller and title)' if similar > 1 else ''
-        cards.append(f'<article><img loading="lazy" src="{esc(safe_img)}" alt=""><div><h3><a href="{esc(safe_url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a></h3><p><strong>{esc(price_text)}</strong>{esc(shipping_text)} · {esc(seller)} · {esc(status)}</p><p>{esc(labels)}</p><small>First: {esc(first)} · Last: {esc(last)}{esc(relist)} · {esc(notes)}</small></div></article>')
+        measure_text = ''
+        if measurements and 'has_tape": true' in measurements:
+            try:
+                m_data = json.loads(measurements)
+                if m_data.get('measurements'):
+                    vals = ', '.join(f"{m['value']} {m['unit']}" for m in m_data['measurements'])
+                    measure_text = f' 📏 <strong>Measured: {esc(vals)}</strong>'
+            except Exception:
+                pass
+        cards.append(f'<article><img loading="lazy" src="{esc(safe_img)}" alt=""><div><h3><a href="{esc(safe_url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a></h3>{measure_text}<p><strong>{esc(price_text)}</strong>{esc(shipping_text)} · {esc(seller)} · {esc(status)}</p><p>{esc(labels)}</p><small>First: {esc(first)} · Last: {esc(last)}{esc(relist)} · {esc(notes)}</small></div></article>')
     inventory = ''.join(f'<tr><td>{esc(x["category"])}</td><td>{esc(x["name"])}</td><td>{esc(x["owned_quantity"])}/{esc(x["target_quantity"])}</td><td>{esc(x["priority"])}</td></tr>' for x in items)
     page = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vintage Wardrobe Watcher</title><style>body{font:15px system-ui;background:#f7f5f0;color:#222;max-width:1150px;margin:2rem auto;padding:0 1rem}article{display:flex;gap:1.2rem;padding:1rem;background:white;border:1px solid #ddd;border-radius:12px;margin:1rem 0}img{width:130px;height:140px;object-fit:contain}h3{margin:.3rem 0}a{color:#1f4b6e}small{color:#666}table{border-collapse:collapse;width:100%;background:white}td,th{padding:.5rem;border-bottom:1px solid #ddd;text-align:left}@media(max-width:600px){img{width:90px;height:100px}}</style><h1>Vintage Wardrobe Watcher</h1><p>Local archive. Similarity flags are possible relistings, not proof. Search matches are candidates, not verified fits.</p><h2>Wardrobe plan</h2><table><tr><th>Category</th><th>Garment</th><th>Owned / target</th><th>Priority (1 highest)</th></tr>''' + inventory + '</table><h2>Archived listings</h2>' + '\n'.join(cards) + '</html>'
     path = ROOT / 'report.html'
