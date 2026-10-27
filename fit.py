@@ -97,7 +97,7 @@ def judge_reading(garment_type, name, value_cm, low=None, high=None):
 def judge_listing(garment_type, readings, targets):
     """Verdict for one listing.
 
-    readings: list of (name, value_cm, confidence) read from the listing.
+    readings: list of (name, value_cm, confidence, verification_status) read from the listing.
     targets:  {garment_type: {name: (low, high)}} from load_targets().
     """
     if garment_type is None:
@@ -106,8 +106,11 @@ def judge_listing(garment_type, readings, targets):
     if not wanted:
         return Verdict(GREY, [f'ingen mål satt for {measure.TYPE_LABELS[garment_type].lower()} under Mine mål'], {})
     per_reading, confident = {}, {}
-    for name, value_cm, confidence in readings:
+    for name, value_cm, confidence, verification_status in readings:
         if name not in wanted:
+            continue
+        if verification_status != 'human_verified':
+            per_reading[name] = (GREY, f'{measure.LABELS.get(name, name)} er ikke manuelt verifisert')
             continue
         colour, text = judge_reading(garment_type, name, value_cm, *wanted[name])
         if confidence == 'low':
@@ -153,8 +156,8 @@ def all_verdicts(conn, garment_types):
     """item_id -> Verdict for every listing. garment_types comes from watcher.garment_types()."""
     targets = load_targets(conn)
     readings, analysed = {}, {}
-    for item_id, name, value_cm, confidence in conn.execute('SELECT item_id,name,value_cm,confidence FROM listing_measurements'):
-        readings.setdefault(item_id, []).append((name, value_cm, confidence))
+    for item_id, name, value_cm, confidence, verification_status in conn.execute('SELECT item_id,name,value_cm,confidence,verification_status FROM listing_measurements'):
+        readings.setdefault(item_id, []).append((name, value_cm, confidence, verification_status))
     for item_id, status in conn.execute('SELECT item_id,status FROM listing_analysis'):
         analysed[item_id] = status
     verdicts = {}
