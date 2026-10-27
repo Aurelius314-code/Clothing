@@ -17,9 +17,12 @@ MAX_PHOTOS = 24  # eBay allows up to 24 photos per listing
 BROWSER_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
 # Wardrobe categories in wardrobe.json -> the kind of measurements to look for.
-# Accessories, footwear and basics are sold by size, so they are not analysed.
-CATEGORY_TYPES = {'Outerwear': 'jacket', 'Tailoring': 'jacket', 'Trousers': 'trousers',
+# Coats are worn over a jacket, so they get their own targets. Accessories, footwear and
+# basics are sold by size, so they are not analysed.
+CATEGORY_TYPES = {'Outerwear': 'coat', 'Tailoring': 'jacket', 'Trousers': 'trousers',
                   'Knitwear': 'knitwear', 'Shirts': 'shirt'}
+TYPE_LABELS = {'jacket': 'Jakker og dresser', 'coat': 'Frakker og yttertøy', 'waistcoat': 'Vester',
+               'trousers': 'Bukser', 'knitwear': 'Strikk', 'shirt': 'Skjorter'}
 
 # Measurement key -> how it is taken, as explained to the model (same method as the measuring sheet).
 MEASUREMENTS = {
@@ -29,6 +32,11 @@ MEASUREMENTS = {
         'sleeve': 'from the shoulder seam down the outside of the sleeve to the end of the cuff',
         'back_length': 'centre back, from the bottom of the collar seam to the hem',
         'waist': 'straight across at the narrowest point, around the top button',
+    },
+    'waistcoat': {
+        'pit_to_pit': 'straight across the front from armpit to armpit, buttoned',
+        'back_length': 'centre back, from the collar seam or neck to the hem',
+        'waist': 'straight across at the narrowest point, buttoned',
     },
     'trousers': {
         'waist': 'across the top edge of the waistband, buttoned',
@@ -53,8 +61,19 @@ MEASUREMENTS = {
     },
 }
 
+MEASUREMENTS['coat'] = dict(MEASUREMENTS['jacket'])
+
 # Measurements taken across the garment. All-round values are halved so every width is stored flat.
 WIDTHS = {'pit_to_pit', 'waist', 'seat', 'thigh', 'leg_opening'}
+
+# How each measurement is taken, for the "Mine mål" tab (same method as the measuring sheet).
+HELP = {'pit_to_pit': 'Rett over fra armhule til armhule, knappet', 'shoulders': 'Over ryggen, fra søm til søm der ermene sitter',
+        'sleeve': 'Fra skuldersømmen ned til enden av mansjetten', 'back_length': 'Midt bak, fra kragesømmen til kanten nederst',
+        'waist': 'Rett over der plagget er smalest / øverste kant av linningen', 'seat': 'Over det bredeste partiet, ved bunnen av gylfen',
+        'front_rise': 'Fra skrittsømmen opp til toppen av linningen foran', 'back_rise': 'Fra skrittsømmen opp til toppen av linningen bak',
+        'thigh': 'Over ett ben, ca. 2,5 cm under skrittet', 'inseam': 'Fra skrittsømmen ned langs innsiden til kanten',
+        'leg_opening': 'Rett over benåpningen nederst', 'length': 'Fra høyeste punkt ved kragen rett ned til kanten',
+        'collar': 'Kragen brettet ut: fra midten av knappen til ytterenden av knapphullet'}
 
 LABELS = {'pit_to_pit': 'Brystvidde', 'shoulders': 'Skulderbredde', 'sleeve': 'Ermelengde',
           'back_length': 'Rygglengde', 'waist': 'Livvidde', 'seat': 'Setevidde',
@@ -63,6 +82,13 @@ LABELS = {'pit_to_pit': 'Brystvidde', 'shoulders': 'Skulderbredde', 'sleeve': 'E
 ORDER = list(LABELS)
 
 EBAY_PHOTO = re.compile(r'^https://i\.ebayimg\.com/(?:thumbs/)?images/g/([^/?#]+)/s-l\d+(\.[a-z]+)', re.IGNORECASE)
+
+
+def garment_type_for(wardrobe_item):
+    """The measurement type for a wardrobe.json item, or None for things bought by size."""
+    if 'waistcoat' in wardrobe_item.get('name', '').lower():
+        return 'waistcoat'
+    return CATEGORY_TYPES.get(wardrobe_item.get('category'))
 
 
 class AnalysisError(Exception):
