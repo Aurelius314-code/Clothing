@@ -264,12 +264,15 @@ def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_
         reply = r.json()['choices'][0]['message']['content'] or ''
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise AnalysisError('unexpected reply from DeepSeek') from exc
-    from measurement_gate import filter_supported_readings\n    readings = parse_readings(reply, garment_type)\n    accepted, rejected = filter_supported_readings(readings, reply)\n    # Preserve rejection reasons in the raw audit record without changing DB schema.\n    if rejected:\n        try:\n            audit = _json_object(reply)\n            audit["rejected_photo_measurements"] = rejected\n            reply = json.dumps(audit, ensure_ascii=False)\n        except (AnalysisError, TypeError, ValueError):\n            pass\n    return accepted, reply
-
-
-def api_key():
-    return os.environ.get('DEEPSEEK_API_KEY', '').strip()
-
-
-def model_name():
-    return os.environ.get('DEEPSEEK_MODEL', '').strip() or DEFAULT_MODEL
+    from measurement_gate import filter_supported_readings
+    readings = parse_readings(reply, garment_type)
+    accepted, rejected = filter_supported_readings(readings, reply)
+    # Preserve rejection reasons in the raw audit record without changing DB schema.
+    if rejected:
+        try:
+            audit = _json_object(reply)
+            audit["rejected_photo_measurements"] = rejected
+            reply = json.dumps(audit, ensure_ascii=False)
+        except (AnalysisError, TypeError, ValueError):
+            pass
+    return accepted, reply
