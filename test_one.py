@@ -1,7 +1,7 @@
 """Try the DeepSeek measurement reading on one listing or one photo, without saving anything.
 
-    python test_one.py <eBay listing link> [jacket|trousers|knitwear|shirt]
-    python test_one.py <photo address from i.ebayimg.com> [jacket|trousers|knitwear|shirt]
+    python test_one.py <eBay listing link> [jacket|coat|waistcoat|trousers|knitwear|shirt]
+    python test_one.py <photo address from i.ebayimg.com> [jacket|coat|waistcoat|trousers|knitwear|shirt]
 
 The garment type defaults to the one the listing matched in your database, or jacket.
 """

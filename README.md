@@ -1,4 +1,4 @@
-# Vintage Wardrobe Watcher v0.5 – Windows / PyCharm
+# Vintage Wardrobe Watcher v0.6 – Windows / PyCharm
 
 ## Install
 Open the folder in PyCharm. In the PyCharm terminal with the project interpreter active:
@@ -28,6 +28,19 @@ With `--analyze-images`, each listing found for a jacket, coat, trousers, knitwe
 
 Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to change it). Listings already analysed are not sent again, rejected listings are skipped, and accessories, shoes and basics are left out because they are bought by size. A failed analysis is shown in the app and retried on the next run, up to 3 times. A wrong key or an empty DeepSeek balance stops the analysis with a message.
 
+## Traffic light
+
+Under **📐 Mine mål**, enter a range for each measurement you care about, per type of garment (jackets, coats, waistcoats, trousers, knitwear, shirts). Use flat measurements in cm from the measuring sheet, for example 1–2 cm either side of a garment that fits you. Leave a field empty to not judge that measurement.
+
+Each listing in **🔎 Annonser** then gets a colour, with the reason:
+
+- 🟢 **Passer**: every judged measurement is inside your range, and the key ones are known (for example pit to pit and shoulders for jackets, waist and front rise for trousers).
+- 🟡 **Kanskje**: something a tailor can usually fix (a waist that can be taken in, sleeves that can be shortened), a measurement just outside your range, a key measurement missing, or an uncertain reading to check in the photo.
+- 🔴 **Passer ikke**: a measurement clearly outside your range that can't be fixed, such as shoulders, rise or knitwear.
+- ⚪ **Ukjent**: not analysed yet, no measurements shown, no targets set, or bought by size.
+
+Red listings are hidden by default; choose them in the Trafikklys filter to see them, and sort by *Beste treff først* to see green first. An uncertain reading never makes a listing red. The rules of thumb for what can be altered, and by how much, are in `fit.py`.
+
 To try the reading on a single listing or photo without saving anything:
 
 ```powershell
@@ -39,6 +52,7 @@ python check.py                                     # how many listings are anal
 1. Close the program and **back up `wardrobe.sqlite3`**.
 2. In PyCharm, **Git → Pull**, then run `python -m pip install -r requirements.txt`.
 3. Keep your own `wardrobe.json`, `wardrobe.sqlite3` and `.env`. New tables are added on first start; nothing is removed.
+4. From v0.5: coats and outerwear now have their own targets, separate from jackets, because they are worn over a jacket.
 
 From v0.3, the first start also fixes the wardrobe targets of the two seeded pleated trousers (assign them in the garment register), re-keys hand-entered eBay listings to their item number, and moves listing notes to the reviews.
 
@@ -51,10 +65,12 @@ From the first DeepSeek version: its readings were lists of numbers from the tap
 - Listing reviews with paging (50 per page) that stays on the same page after a review, and possible relisting warnings based on seller + normalized title.
 - eBay API search that only returns sellers who ship to `EBAY_SHIP_TO_COUNTRY`, stores the cheapest shipping quote, and keeps auction bid changes out of the price history.
 - Measurements read from listing photos and text by DeepSeek, shown in the app and in `report.html`.
+- Traffic light per listing against your own target ranges, with filtering and sorting by colour.
 
 ## Important limitations
 - Reading a tape in a photo can go wrong when the photo is blurry, angled or the tape doesn't start at the garment's edge. Check the photo behind the measurements that matter before buying, especially readings marked uncertain.
-- The app does not yet compare readings with your own measurements.
+- The alteration rules in `fit.py` are rules of thumb. What a tailor can do depends on the garment, so treat yellow as "worth a closer look".
+- `report.html` shows the readings but not the traffic light; use the app for that.
 - Non-eBay links are matched on the exact URL. eBay listings with size or colour variations can still appear twice. Relisting flags are only heuristic.
 - `owned_quantity` in the wardrobe plan and the separate garment register are intentionally separate; update the plan count yourself when adding a garment.
 - Shipping is stored, but landed Norwegian costs (VAT, duty, currency) are not calculated yet.

@@ -4,13 +4,15 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from urllib.parse import urlparse
 
 import requests
 import streamlit as st
 
+import fit
 import measure
-from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint,
+from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
                      has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now)
 
 st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layout='wide')
@@ -115,17 +117,21 @@ with connect() as conn:
         options = [None, *names]
         return options if current in options else [*options, current]
 
-    tabs = st.tabs(['🏠 Oversikt', '🧥 Garderobe', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk'])
+    types = garment_types(conn, items)
+    verdicts = fit.all_verdicts(conn, types)
+    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit = st.tabs(
+        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk'])
 
-    with tabs[0]:
+    with tab_home:
         st.title('Vintage Wardrobe Watcher')
         st.caption('Din lokale vintage-garderobe. Ingen eBay-tilgang kreves for å bruke disse sidene.')
         total = sum(int(i['target_quantity']) for i in items)
         owned = sum(int(i['owned_quantity']) for i in items)
         listed = conn.execute('SELECT COUNT(*) FROM listings').fetchone()[0]
         saved = conn.execute("SELECT COUNT(*) FROM listing_reviews WHERE status='saved'").fetchone()[0]
-        a, b, c, d = st.columns(4)
+        a, b, c, d, e = st.columns(5)
         a.metric('Planlagte enheter', total); b.metric('Registrert eid', owned); c.metric('Arkiverte annonser', listed); d.metric('Lagrede annonser', saved)
+        e.metric('Annonser som passer', sum(v.colour == fit.GREEN for v in verdicts.values()))
         st.progress(min(owned / total, 1) if total else 0)
         st.subheader('Neste prioriterte plagg')
         pending = sorted((i for i in items if i['enabled'] and i['owned_quantity'] < i['target_quantity']), key=lambda x: (x['priority'], x['category']))
@@ -134,7 +140,7 @@ with connect() as conn:
                 st.markdown(f"**{i['name']}** · {i['category']} · prioritet {i['priority']}")
                 st.caption(i.get('notes', ''))
 
-    with tabs[1]:
+    with tab_wardrobe:
         st.header('Garderobeplan')
         st.caption('Antall og søkestatus lagres i wardrobe.json. Eksisterende data beholdes.')
         categories = sorted({i['category'] for i in items})
@@ -160,53 +166,104 @@ with connect() as conn:
             wid = st.selectbox('Tilhører garderobemål', target_options(), format_func=target_label)
             x, y = st.columns(2)
             brand = x.text_input('Merke'); size = y.text_input('Størrelse')
-            fit = st.selectbox('Passform', list(FIT_LABELS), format_func=FIT_LABELS.get)
+            rating = st.selectbox('Passform', list(FIT_LABELS), format_func=FIT_LABELS.get)
             notes = st.text_area('Notater om passform, tilstand og mål')
             image = st.text_input('Bilde-URL (valgfritt)')
             if st.form_submit_button('Registrer plagg'):
                 if not name.strip(): st.error('Oppgi navn')
                 elif image and not safe_url(image): st.error('Ugyldig bilde-URL')
                 else:
-                    conn.execute('INSERT INTO owned_garments(wardrobe_id,name,brand,size,fit,notes,image_url,created_at) VALUES(?,?,?,?,?,?,?,?)', (wid, name, brand, size, fit, notes, image, utc_now()))
+                    conn.execute('INSERT INTO owned_garments(wardrobe_id,name,brand,size,fit,notes,image_url,created_at) VALUES(?,?,?,?,?,?,?,?)', (wid, name, brand, size, rating, notes, image, utc_now()))
                     conn.commit(); st.success('Plagg registrert. Antall eid i garderobeplanen oppdateres separat.'); st.rerun()
         garments = conn.execute('SELECT garment_id,wardrobe_id,name,brand,size,fit,notes,image_url FROM owned_garments ORDER BY garment_id DESC').fetchall()
-        for gid, gwid, n, br, sz, fit, note, img in garments:
+        for gid, gwid, n, br, sz, rating, note, img in garments:
             with st.container(border=True):
-                st.markdown(f'**{n}** · {br} · {sz} · {FIT_LABELS.get(fit, fit)}')
+                st.markdown(f'**{n}** · {br} · {sz} · {FIT_LABELS.get(rating, rating)}')
                 st.caption(note)
                 if img and safe_url(img): st.image(img, width=180)
                 options = target_options(gwid)
                 left, right = st.columns([3, 1], vertical_alignment='bottom')
                 new_wid = left.selectbox('Garderobemål', options, index=options.index(gwid), format_func=target_label, key=f'gw{gid}')
-                if right.button('Lagre mål', key=f'gws{gid}', disabled=new_wid == gwid):
+                if right.button('Lagre garderobemål', key=f'gws{gid}', disabled=new_wid == gwid):
                     conn.execute('UPDATE owned_garments SET wardrobe_id=? WHERE garment_id=?', (new_wid, gid)); conn.commit(); st.rerun()
                 if st.button('Slett denne registreringen', key='delg' + str(gid)):
                     conn.execute('DELETE FROM owned_garments WHERE garment_id=?', (gid,)); conn.commit(); st.rerun()
 
-    with tabs[2]:
+    with tab_targets:
+        st.header('Mine mål')
+        st.caption('Områdene her avgjør trafikklyset på annonsene. Skriv inn flate mål i cm fra målearket, for eksempel '
+                   '1–2 cm på hver side av et plagg som passer deg. La et felt stå tomt hvis målet ikke skal vurderes.')
+        if st.session_state.pop('targets_saved', None):
+            st.success('Målene er lagret, og trafikklysene er oppdatert.')
+        kind = st.selectbox('Type plagg', list(measure.TYPE_LABELS), format_func=measure.TYPE_LABELS.get, key='target_kind')
+        current = fit.load_targets(conn).get(kind, {})
+        with st.form(f'targets_{kind}'):
+            entered = {}
+            for name in measure.MEASUREMENTS[kind]:
+                label = measure.LABELS[name] + (' (flatt)' if name in measure.WIDTHS else '')
+                must = ' Må være kjent for grønt lys.' if name in fit.KEY[kind] else ''
+                info, low_col, high_col = st.columns([3, 1, 1])
+                info.markdown(f'**{label}**')
+                info.caption(f'{measure.HELP[name]}. {fit.rule_hint(kind, name)}.{must}')
+                # The fields start empty (value=None) and are filled from the saved targets, because a
+                # field that starts with a number can't be emptied again in the browser.
+                for key, saved in zip((f't_{kind}_{name}_lo', f't_{kind}_{name}_hi'), current.get(name, (None, None))):
+                    if key not in st.session_state:
+                        st.session_state[key] = saved
+                entered[name] = (
+                    low_col.number_input('Fra (cm)', min_value=0.0, max_value=200.0, value=None, step=0.5, format='%.1f', key=f't_{kind}_{name}_lo'),
+                    high_col.number_input('Til (cm)', min_value=0.0, max_value=200.0, value=None, step=0.5, format='%.1f', key=f't_{kind}_{name}_hi'))
+            if st.form_submit_button('Lagre mine mål'):
+                wrong = [measure.LABELS[n] for n, (lo, hi) in entered.items() if lo is not None and hi is not None and lo > hi]
+                if wrong:
+                    st.error('«Fra» er større enn «Til» for: ' + ', '.join(wrong))
+                else:
+                    fit.save_targets(conn, kind, entered)
+                    st.session_state['targets_saved'] = True
+                    st.rerun()
+        counts = Counter(v.colour for item_id, v in verdicts.items() if types.get(item_id) == kind)
+        if counts:
+            st.caption(f'{measure.TYPE_LABELS[kind]} i arkivet nå: ' + ' · '.join(f'{fit.LABELS[c]} {counts[c]}' for c in fit.COLOURS if counts[c]))
+
+    with tab_listings:
         st.header('Annonsearkiv')
         st.caption('Gamle annonser beholdes, også når de ikke lenger er aktive på eBay.')
-        filter_status = st.selectbox('Vurdering', ['Alle', *REVIEW_STATUSES], format_func=lambda s: STATUS_LABELS.get(s, s))
+        top_left, top_mid, top_right = st.columns([1, 2, 1])
+        filter_status = top_left.selectbox('Vurdering', ['Alle', *REVIEW_STATUSES], format_func=lambda s: STATUS_LABELS.get(s, s))
+        colours = top_mid.multiselect('Trafikklys', list(fit.COLOURS), default=[fit.GREEN, fit.YELLOW, fit.GREY],
+                                      format_func=fit.LABELS.get, key='listing_colours')
+        order = top_right.selectbox('Sortering', ['newest', 'best'], key='listing_order',
+                                    format_func={'newest': 'Nyeste først', 'best': 'Beste treff først'}.get)
         where, args = ('', ()) if filter_status == 'Alle' else ("WHERE COALESCE(r.status,'unreviewed')=?", (filter_status,))
-        total = conn.execute(f'SELECT COUNT(*) FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where}', args).fetchone()[0]
+        candidates = [i for (i,) in conn.execute(
+            f'SELECT l.item_id FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where} ORDER BY l.first_seen DESC', args)]
+        unknown = fit.Verdict(fit.GREY, [], {})
+        selected = [i for i in candidates if verdicts.get(i, unknown).colour in colours]
+        hidden = len(candidates) - len(selected)
+        if order == 'best':
+            selected.sort(key=lambda i: fit.RANK[verdicts.get(i, unknown).colour])  # stable: newest first within a colour
+        total = len(selected)
         pages = max(1, -(-total // PAGE_SIZE))
         # One remembered page per filter. The widget's label and limits never change, so Streamlit keeps
         # the page when the count changes (for example after rejecting a listing); it only moves back
         # when the page no longer exists.
-        page_key = f'listing_page_{filter_status}'
+        page_key = f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}'
         if st.session_state.get(page_key, 1) > pages:
             st.session_state[page_key] = pages
-        if pages > 1:
-            page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages)
-            st.caption(f'Side {page} av {pages} · {total} annonser')
-        else:
-            page = 1
-        rows = conn.execute(f'''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
-          l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
-          COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
-          (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint)
-          FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where}
-          ORDER BY l.first_seen DESC LIMIT ? OFFSET ?''', (*args, PAGE_SIZE, (page - 1) * PAGE_SIZE)).fetchall()
+        page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages) if pages > 1 else 1
+        hidden_text = f' · {hidden} skjult av trafikklys-filteret' if hidden else ''
+        st.caption((f'Side {page} av {pages} · ' if pages > 1 else '') + f'{total} annonser{hidden_text}')
+        page_ids = selected[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        rows = []
+        if page_ids:
+            by_id = {row[0]: row for row in conn.execute(f'''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
+              l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
+              COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
+              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint)
+              FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
+              WHERE l.item_id IN ({','.join('?' * len(page_ids))})''', page_ids)}
+            rows = [by_id[i] for i in page_ids]
+        targets = fit.load_targets(conn)
         ids = [row[0] for row in rows]
         marks = ','.join('?' * len(ids))
         readings, analyses, photos = {}, {}, {}
@@ -227,6 +284,9 @@ with connect() as conn:
                     if img and safe_url(img): st.image(img, width='stretch')
                 with right:
                     st.markdown(f'**{md(title)}**')
+                    verdict = verdicts.get(iid, unknown)
+                    reasons = '; '.join(verdict.reasons)
+                    st.markdown(f'{fit.LABELS[verdict.colour]}' + (f' – {reasons}' if reasons else ''))
                     price_text = money(price, currency) + (' (gjeldende bud, auksjon)' if is_auction_only(options) else '')
                     if ship is not None:
                         price_text += f' + frakt {money(ship, ship_currency)}'
@@ -238,11 +298,17 @@ with connect() as conn:
                     analysis = analyses.get(iid)
                     if found:
                         lines = []
+                        wanted = targets.get(types.get(iid), {})
                         for name, value_cm, raw_value, raw_unit, flat, source, confidence, note in found:
                             label = measure.LABELS.get(name, name) + (' (flatt)' if name in measure.WIDTHS else '')
                             raw = f'{raw_value:g} {raw_unit}' + (', målt rundt' if name in measure.WIDTHS and not flat else '')
                             where_from = source.replace('photo', 'bilde').replace('text', 'teksten')
-                            line = f'- {label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
+                            dot = fit.DOTS[verdict.per_reading[name][0]] + ' ' if name in verdict.per_reading else ''
+                            line = f'- {dot}{label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
+                            if name in wanted:
+                                low, high = wanted[name]
+                                line += ' · mål ' + (f'{low:g}–{high:g}' if low is not None and high is not None
+                                                     else f'minst {low:g}' if low is not None else f'høyst {high:g}') + ' cm'
                             lines.append(line + (f' – {md(note)}' if note else ''))
                         st.markdown('**Mål fra annonsen**\n' + '\n'.join(lines))
                     elif analysis and analysis[0] == 'ok':
@@ -263,7 +329,7 @@ with connect() as conn:
                             conn.commit(); st.rerun()
         if not rows: st.info('Ingen annonser i dette utvalget ennå.')
 
-    with tabs[3]:
+    with tab_add:
         st.header('Manuell annonseimport')
         st.caption('Samme eBay-annonse oppdaterer den eksisterende registreringen, også om lenken har andre sporingsparametere '
                    'eller er en delelenke fra eBay-appen (ebay.us/…, ebay.io/…). Bildene og målene hentes ved neste analyse.')
@@ -289,12 +355,12 @@ with connect() as conn:
                     fresh = manual_add(conn, title.strip(), url, seller, float(price), currency, image, wid, notes)
                     st.success('Ny annonse registrert.' if fresh else 'Eksisterende annonse oppdatert.')
 
-    with tabs[4]:
+    with tab_fit:
         st.header('Passform og prishistorikk')
         st.subheader('Passformreferanser')
         problems = conn.execute("SELECT name,brand,size,fit,notes FROM owned_garments WHERE fit IN ('poor','needs_review') ORDER BY fit DESC, name").fetchall()
-        for n, br, sz, fit, note in problems:
-            st.info(f"**{n}**{' · ' + br if br else ''}{' · ' + sz if sz else ''} – {FIT_LABELS.get(fit, fit)}" + (f'\n\n{note}' if note else ''))
+        for n, br, sz, rating, note in problems:
+            st.info(f"**{n}**{' · ' + br if br else ''}{' · ' + sz if sz else ''} – {FIT_LABELS.get(rating, rating)}" + (f'\n\n{note}' if note else ''))
         if not problems:
             st.caption('Ingen registrerte plagg er markert med passformproblemer.')
         st.caption('Bruk faktiske mål, ikke bare etikettstørrelse.')
