@@ -1,5 +1,7 @@
 """Conservative, configurable eBay prefilters. Unknown attributes are retained."""
 import json
+import os
+import tempfile
 from pathlib import Path
 
 CONFIG = Path(__file__).with_name("search_filters.json")
@@ -56,3 +58,16 @@ def accept_item(item, options):
             pass
     # Seller size labels are notoriously unreliable for vintage; do not hard-reject unknown sizes.
     return True, "accepted"
+
+def save_config(data, path=CONFIG):
+    """Atomically persist filter settings without overwriting wardrobe.json."""
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".search-filters-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
