@@ -12,6 +12,7 @@ import streamlit as st
 
 import fit
 import measure
+import search_prefilter
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
                      has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now)
 
@@ -119,8 +120,8 @@ with connect() as conn:
 
     types = garment_types(conn, items)
     verdicts = fit.all_verdicts(conn, types)
-    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit = st.tabs(
-        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk'])
+    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search = st.tabs(
+        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre'])
 
     with tab_home:
         st.title('Vintage Wardrobe Watcher')
@@ -374,3 +375,45 @@ with connect() as conn:
         st.subheader('Eksporter sikkerhetskopi')
         st.download_button('Last ned garderobeplan (JSON)', CATALOG.read_bytes(), file_name='wardrobe_backup.json', mime='application/json')
         st.caption(f'Databasen ligger lokalt i {DB.name}. Ta også kopi av denne filen når programmet er lukket.')
+
+    with tab_search:
+        st.header('eBay-søkefiltre')
+        st.caption('Filtrene brukes neste gang watcher.py søker på eBay. Ingen DeepSeek-kall gjøres her. '
+                   'Ukjente størrelser og manglende prisinformasjon beholdes.')
+        settings = search_prefilter.load_config()
+        kinds = [('knitwear', 'Gensere og strikk'), ('trousers', 'Bukser'),
+                 ('jacket', 'Jakker og blazere'), ('coat', 'Frakker'),
+                 ('waistcoat', 'Vester'), ('shirt', 'Skjorter')]
+        with st.form('search_filters_form'):
+            enabled = st.checkbox('Aktiver søkefiltre', value=bool(settings.get('enabled', False)))
+            st.caption('eBay bruker prisgrensen i valgt valuta, ikke NOK-konvertering. '
+                       'Frakt og importavgifter inngår ikke i prisgrensen.')
+            edited = {}
+            for kind, label in kinds:
+                current = settings.get('garment_types', {}).get(kind, {})
+                with st.expander(label, expanded=(kind == 'knitwear')):
+                    currency = st.selectbox('Valuta', ['GBP', 'USD', 'EUR', 'NOK'],
+                                            index=['GBP', 'USD', 'EUR', 'NOK'].index(
+                                                current.get('price_currency', 'GBP')
+                                                if current.get('price_currency', 'GBP') in ['GBP', 'USD', 'EUR', 'NOK']
+                                                else 'GBP'), key='filter_currency_' + kind)
+                    price_enabled = st.checkbox('Bruk maksimalpris', value=current.get('max_item_price') is not None,
+                                                key='filter_price_on_' + kind)
+                    price = st.number_input('Maksimal annonsepris', min_value=1.0,
+                                            value=float(current.get('max_item_price') or 150.0),
+                                            step=10.0, key='filter_price_' + kind)
+                    excluded = st.text_input('Utelukk titler med (kommadelt)',
+                                              value=', '.join(current.get('exclude_title_terms', [])),
+                                              key='filter_exclude_' + kind)
+                    edited[kind] = {
+                        'max_item_price': price if price_enabled else None,
+                        'price_currency': currency,
+                        'exclude_title_terms': [w.strip() for w in excluded.split(',') if w.strip()]
+                    }
+            if st.form_submit_button('Lagre søkefiltre'):
+                settings['enabled'] = enabled
+                settings['garment_types'] = {**settings.get('garment_types', {}), **edited}
+                search_prefilter.save_config(settings)
+                st.success('Søkefiltre lagret. De gjelder fra neste eBay-søk.')
+        st.caption('For å se antall annonser funnet og forkastet, kjør watcher.py i terminalen. '
+                   'Søkestatistikk lagres foreløpig ikke mellom kjøringer.')
