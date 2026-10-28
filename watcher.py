@@ -16,6 +16,7 @@ import requests
 from dotenv import load_dotenv
 
 import measure
+import search_prefilter
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
@@ -179,13 +180,13 @@ def get_item(item_id, access_token):
     return r.json()
 
 
-def fetch(query, access_token, limit=100):
+def fetch(query, access_token, limit=100, filters=None):
     country = _ship_to_country()
     headers = _ebay_headers(access_token)
     for offset in range(0, limit, 200):
         # deliveryCountry limits results to sellers who will ship to that country.
         params = {'q': query, 'limit': min(200, limit - offset), 'offset': offset,
-                  'filter': f'deliveryCountry:{country}'}
+                  'filter': filters or f'deliveryCountry:{country}'}
         r = requests.get('https://api.ebay.com/buy/browse/v1/item_summary/search', headers=headers, params=params, timeout=45)
         r.raise_for_status()
         items = r.json().get('itemSummaries', [])
@@ -468,16 +469,33 @@ def main():
         if not args.report_only:
             access_token = token()
             stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
-            searches = [(x['id'], q) for x in catalog() if x['enabled'] and x['owned_quantity'] < x['target_quantity'] for q in x['search_terms']]
+            filter_config = search_prefilter.load_config()
+            searches = [(x, q) for x in catalog() if x['enabled'] and x['owned_quantity'] < x['target_quantity'] for q in x['search_terms']]
             if args.max_queries:
                 searches = searches[:args.max_queries]
-            for wardrobe_id, query in searches:
+            prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
+            for wardrobe_item, query in searches:
+                wardrobe_id = wardrobe_item['id']
+                kind = measure.garment_type_for(wardrobe_item)
+                options = search_prefilter.options_for(filter_config, kind)
+                filters = search_prefilter.ebay_filters(options, _ship_to_country())
                 try:
-                    for item in fetch(query, access_token, args.limit_per_query):
+                    for item in fetch(query, access_token, args.limit_per_query, filters=filters):
+                        prefilter_stats['returned'] += 1
+                        accepted, reason = search_prefilter.accept_item(item, options)
+                        if not accepted:
+                            prefilter_stats['rejected'] += 1
+                            continue
+                        prefilter_stats['accepted'] += 1
+                        existing_id = item.get('itemId')
+                        if existing_id and conn.execute(
+                                "SELECT 1 FROM listing_analysis WHERE item_id=? AND status='ok'", (existing_id,)).fetchone():
+                            prefilter_stats['already_analyzed'] += 1
                         stats[ingest(conn, item, wardrobe_id)] += 1
                     conn.commit()
                 except requests.RequestException as exc:
                     print(f'API error for {query!r}: {exc}')
+            print('Search prefilter:', prefilter_stats)
             print(stats)
         if args.analyze_images:
             if access_token is None:
