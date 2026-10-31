@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 import measure
 import search_prefilter
+import group_priority
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
@@ -470,7 +471,7 @@ def main():
             access_token = token()
             stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
             filter_config = search_prefilter.load_config()
-            searches = [(x, q) for x in catalog() if x['enabled'] and x['owned_quantity'] < x['target_quantity'] for q in x['search_terms']]
+            searches = [(x, q) for x in group_priority.search_order(catalog(), group_priority.load()) for q in x['search_terms']]
             if args.max_queries:
                 searches = searches[:args.max_queries]
             prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
