@@ -13,6 +13,7 @@ import streamlit as st
 import fit
 import measure
 import search_prefilter
+import group_priority
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
                      has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now)
 
@@ -120,8 +121,8 @@ with connect() as conn:
 
     types = garment_types(conn, items)
     verdicts = fit.all_verdicts(conn, types)
-    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search = st.tabs(
-        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre'])
+    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups = st.tabs(
+        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet'])
 
     with tab_home:
         st.title('Vintage Wardrobe Watcher')
@@ -417,3 +418,24 @@ with connect() as conn:
                 st.success('Søkefiltre lagret. De gjelder fra neste eBay-søk.')
         st.caption('For å se antall annonser funnet og forkastet, kjør watcher.py i terminalen. '
                    'Søkestatistikk lagres foreløpig ikke mellom kjøringer.')
+
+    with tab_groups:
+        st.header('Prioriter plagggrupper')
+        st.caption('1 er høyeste prioritet. Søk kjører grupper i prioritert rekkefølge.')
+        priorities = group_priority.load()
+        categories = sorted({item['category'] for item in items},
+                            key=lambda name: (priorities.get(name, 5), name))
+        with st.form('group_priority_form'):
+            selected = {}
+            for category in categories:
+                remaining = sum(bool(item['enabled'] and item['owned_quantity'] < item['target_quantity'])
+                                for item in items if item['category'] == category)
+                left, right = st.columns([3, 1])
+                left.write(f'{category} · {remaining} gjenstående')
+                selected[category] = right.selectbox('Prioritet: ' + category, list(range(1, 11)),
+                    index=max(1, min(10, priorities.get(category, 5))) - 1,
+                    key='priority_' + category)
+            if st.form_submit_button('Lagre gruppeprioriteter'):
+                group_priority.save(selected)
+                st.success('Lagret. Gjelder neste eBay-søk.')
+        st.caption('Enkeltplaggenes prioritet avgjør rekkefølgen innen gruppen.')
