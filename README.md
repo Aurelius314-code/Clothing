@@ -70,6 +70,7 @@ From the first DeepSeek version: its readings were lists of numbers from the tap
 
 ## Features
 - Wardrobe targets and owned counts editable in the browser.
+- Wardrobe principles (`principles` in `wardrobe.json`) shown under **🏠 Oversikt**.
 - Separate physical-garment register, including fit problems and a wardrobe target you can change.
 - Manual entry for listings. eBay links, including share links from the eBay app (`ebay.us/…`, `ebay.io/…`), are recognised by item number, so the same listing updates one record and merges with the API record for it. New notes are added under earlier ones with the date.
 - Listing reviews with paging (50 per page) that stays on the same page after a review, and possible relisting warnings based on seller + normalized title.

@@ -133,6 +133,9 @@ with connect() as conn:
         a.metric('Planlagte enheter', total); b.metric('Registrert eid', owned); c.metric('Arkiverte annonser', listed); d.metric('Lagrede annonser', saved)
         e.metric('Annonser som passer', sum(v.colour == fit.GREEN for v in verdicts.values()))
         st.progress(min(owned / total, 1) if total else 0)
+        if catalog.get('principles'):
+            with st.expander('Retningslinjer for garderoben'):
+                st.markdown('\n'.join(f'- {p}' for p in catalog['principles']))
         st.subheader('Neste prioriterte plagg')
         pending = sorted((i for i in items if i['enabled'] and i['owned_quantity'] < i['target_quantity']), key=lambda x: (x['priority'], x['category']))
         for i in pending[:12]:
