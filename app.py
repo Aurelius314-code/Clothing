@@ -14,8 +14,9 @@ import fit
 import measure
 import search_prefilter
 import group_priority
+import listing_inspector
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
-                     has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now)
+                     has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now, token, _ebay_headers, ingest)
 
 st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layout='wide')
 
@@ -121,8 +122,8 @@ with connect() as conn:
 
     types = garment_types(conn, items)
     verdicts = fit.all_verdicts(conn, types)
-    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups = st.tabs(
-        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet'])
+    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups, tab_inspect = st.tabs(
+        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet', '🔗 Inspiser eBay'])
 
     with tab_home:
         st.title('Vintage Wardrobe Watcher')
@@ -439,3 +440,62 @@ with connect() as conn:
                 group_priority.save(selected)
                 st.success('Lagret. Gjelder neste eBay-søk.')
         st.caption('Enkeltplaggenes prioritet avgjør rekkefølgen innen gruppen.')
+
+    with tab_inspect:
+        st.header('Inspiser én eBay-annonse')
+        st.caption('Bruker eBays offisielle Browse API. Ingen DeepSeek-kostnad ved oppslag.')
+        inspect_url = st.text_input('eBay-lenke eller varenummer', key='inspect_url',
+                                    placeholder='https://www.ebay.com/itm/800191207354')
+        if st.button('Hent annonse fra eBay', key='inspect_fetch'):
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(CATALOG.parent / '.env')
+                number, result = listing_inspector.inspect(
+                    inspect_url, token(), _ebay_headers, resolve_short=resolve_ebay_url)
+                st.session_state['inspected_ebay'] = result
+                st.session_state['inspected_ebay_number'] = number
+            except (ValueError, RuntimeError, requests.RequestException) as exc:
+                st.session_state.pop('inspected_ebay', None)
+                st.error(f'Kunne ikke hente annonsen: {exc}. Avsluttede annonser kan være utilgjengelige i API-et.')
+        if 'inspected_ebay' in st.session_state:
+            listing = st.session_state['inspected_ebay']
+            details = listing_inspector.summary(listing)
+            st.subheader(details['title'] or 'Ukjent annonsetittel')
+            st.caption(f"eBay-varenummer: {st.session_state['inspected_ebay_number']}")
+            if details['url']:
+                st.link_button('Åpne på eBay', details['url'])
+            st.write('Tilstand:', details['condition'] or 'Ikke oppgitt')
+            price_info = details['price']
+            st.write('Pris:', f"{price_info.get('value', '?')} {price_info.get('currency', '')}")
+            photos = measure.photos_from_item(listing)
+            if photos:
+                st.image(photos[:12], width=180)
+            st.subheader('Selgeropplysninger')
+            for aspect in details['aspects']:
+                st.write(f"{aspect.get('name', '')}: {', '.join(str(v) for v in aspect.get('value', []))}")
+            if details['description']:
+                st.text_area('Beskrivelse fra eBay (råtekst/HTML)', details['description'],
+                             height=220, disabled=True)
+            else:
+                st.warning('eBay returnerte ingen beskrivelse. Mål kan fortsatt stå på bildene.')
+            st.info('Passform: Ikke verifisert. Selgeropplysninger og bilder må kontrolleres '
+                    'mot faktiske plaggmål før grønt/rødt signal kan gis.')
+            st.subheader('Arkiver annonse')
+            target = st.selectbox('Tilknytt garderobemål', list(names),
+                                  format_func=lambda wid: names[wid], key='inspect_target')
+            if st.button('Lagre annonse og bilder lokalt', key='inspect_save'):
+                item = dict(listing)
+                item.setdefault('itemId', f"v1|{st.session_state['inspected_ebay_number']}|0")
+                if not item.get('itemWebUrl'):
+                    item['itemWebUrl'] = 'https://www.ebay.com/itm/' + st.session_state['inspected_ebay_number']
+                ingest(conn, item, target)
+                conn.execute('CREATE TABLE IF NOT EXISTS listing_source_snapshots '
+                             '(item_id TEXT PRIMARY KEY, description TEXT, aspects_json TEXT, saved_at TEXT)')
+                conn.execute('INSERT INTO listing_source_snapshots(item_id,description,aspects_json,saved_at) '
+                             'VALUES(?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET '
+                             'description=excluded.description, aspects_json=excluded.aspects_json, '
+                             'saved_at=excluded.saved_at',
+                             (item['itemId'], details['description'],
+                              json.dumps(details['aspects'], ensure_ascii=False), utc_now()))
+                conn.commit()
+                st.success('Annonse, selgerbeskrivelse og bildelenker er arkivert i SQLite.')
