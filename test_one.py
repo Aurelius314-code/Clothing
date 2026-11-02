@@ -1,7 +1,7 @@
 """Try the DeepSeek measurement reading on one listing or one photo, without saving anything.
 
-    python test_one.py <eBay listing link> [jacket|trousers|knitwear|shirt]
-    python test_one.py <photo address from i.ebayimg.com> [jacket|trousers|knitwear|shirt]
+    python test_one.py <eBay listing link> [jacket|coat|waistcoat|trousers|knitwear|shirt]
+    python test_one.py <photo address from i.ebayimg.com> [jacket|coat|waistcoat|trousers|knitwear|shirt]
 
 The garment type defaults to the one the listing matched in your database, or jacket.
 """
@@ -34,7 +34,8 @@ else:
     photos, title, text = measure.photos_from_item(full), full.get('title', ''), measure.listing_text(full)
 
 garment_type = garment_type or 'jacket'
-print(f'{title}\n{len(photos)} photo(s), garment type: {garment_type}, model: {measure.model_name()}\n')
+gate = 'strict' if measure.strict_photo_evidence() else 'lenient'
+print(f'{title}\n{len(photos)} photo(s), garment type: {garment_type}, model: {measure.model_name()}, evidence gate: {gate}\n')
 readings, raw = measure.read_measurements(photos, garment_type, title, text, measure.api_key(), measure.model_name())
 for r in readings:
     width = ' flat' if r['name'] in measure.WIDTHS else ''

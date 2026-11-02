@@ -8,20 +8,22 @@ import json
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from _paths import EVAL_DIR, ROOT
 import measure
 from measurement_benchmark import load_cases
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", default="measurement_cases.csv")
-    parser.add_argument("--output", default="photo_evidence_results.json")
+    parser.add_argument("--dataset", default=str(EVAL_DIR / "measurement_cases.csv"))
+    parser.add_argument("--output", default=str(EVAL_DIR / "photo_evidence_results.json"))
     parser.add_argument("--limit", type=int, default=2)
     args = parser.parse_args()
     if args.limit < 1:
         parser.error("--limit must be positive")
     cases = load_cases(args.dataset)[:args.limit]
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(ROOT / ".env")
     key = measure.api_key()
     if not key:
         parser.error("DEEPSEEK_API_KEY missing from .env")

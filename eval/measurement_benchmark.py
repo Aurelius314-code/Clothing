@@ -1,13 +1,14 @@
 """DeepEval regression tests for the production measure.py extractor.
 
-Run: python -m pytest -q tests/test_measurements.py
-Live evaluation (costs DeepSeek API credits): python evaluate_measurements.py --limit 3
+Run from the project folder: python -m pytest -q eval/tests
+Live evaluation (costs DeepSeek API credits): python eval/evaluate_measurements.py --limit 3
 """
 import csv
 import json
 import math
 from pathlib import Path
 
+import _paths  # noqa: F401  (makes the app's measure.py importable)
 import measure
 
 FIELDS = ("case_id", "garment_type", "title", "description", "photos",

@@ -1,6 +1,17 @@
 {
   "title": "Vintage British Winter Wardrobe - Trondheim",
   "source": "Vintage British Winter Wardrobe - Trondheim-1.pdf, 18 October 2026",
+  "principles": [
+    "Bytt ut hverdagsuniformen først: t-skjorte og joggebukse erstattes av plagg som er like enkle å ta på, men ser mer gjennomtenkte ut.",
+    "Ensfarget, uten trykk og logoer.",
+    "Rolige farger: navy, grå, oliven, brun og offwhite, så alt passer med alt.",
+    "Jeans og chinos i 100 % bomull. Det er elastanen som ryker.",
+    "Høyt liv med pleats gir plass til lår og sete.",
+    "Begynn med bukser og sko, for der merkes det mest.",
+    "Ett plagg om gangen: for hvert nytt plagg går et utslitt til tekstilinnsamling.",
+    "Kjøp brukt der kvaliteten gir mest igjen for pengene: ullplagg, skinnsko og eldre bukser.",
+    "Behold et par joggebukser til hjemmebruk."
+  ],
   "items": [
     {
       "id": "W001",
@@ -602,6 +613,114 @@
         "button on trouser braces"
       ],
       "notes": "2 pairs",
+      "enabled": true
+    },
+    {
+      "id": "W041",
+      "category": "Trousers",
+      "name": "Chinos",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage pleated chinos high rise",
+        "vintage cotton twill pleated chino trousers",
+        "vintage khaki chinos 100% cotton"
+      ],
+      "notes": "100% cotton twill, no elastane; khaki, olive or navy; high rise and pleats for room in thigh and seat; machine washable",
+      "enabled": true
+    },
+    {
+      "id": "W042",
+      "category": "Trousers",
+      "name": "Fatigue trousers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage OG-107 fatigue trousers",
+        "vintage French army fatigue trousers",
+        "vintage army sateen trousers olive"
+      ],
+      "notes": "Olive cotton sateen or twill; hard-wearing everyday trousers that wash well",
+      "enabled": true
+    },
+    {
+      "id": "W043",
+      "category": "Trousers",
+      "name": "100% cotton jeans",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage Levi's 501 100% cotton",
+        "raw selvedge denim jeans",
+        "vintage Lee 101 jeans"
+      ],
+      "notes": "No elastane (stretch denim wears out fast); dark rinse; check rise and thigh",
+      "enabled": true
+    },
+    {
+      "id": "W044",
+      "category": "Knitwear",
+      "name": "Plain chunky shawl-collar cardigan",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage chunky wool shawl collar cardigan",
+        "vintage shawl collar cardigan navy wool"
+      ],
+      "notes": "Plain, heavy knit; navy, grey, oatmeal or brown",
+      "enabled": true
+    },
+    {
+      "id": "W045",
+      "category": "Basics",
+      "name": "Heavyweight plain T-shirts",
+      "target_quantity": 5,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "heavyweight plain t-shirt 100% cotton",
+        "heavyweight blank tee"
+      ],
+      "notes": "Replace printed tees; no print or logo; 200+ g/m²; navy, grey, olive, off-white; modern acceptable",
+      "enabled": true
+    },
+    {
+      "id": "W046",
+      "category": "Basics",
+      "name": "Henley shirts",
+      "target_quantity": 2,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "heavyweight henley shirt cotton",
+        "waffle knit henley"
+      ],
+      "notes": "Plain; long sleeves to layer under knitwear; modern acceptable",
+      "enabled": true
+    },
+    {
+      "id": "W047",
+      "category": "Footwear",
+      "name": "Plain leather sneakers",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 3,
+      "optional": false,
+      "search_terms": [
+        "plain white leather sneakers",
+        "minimalist leather trainers"
+      ],
+      "notes": "Replace running shoes for everyday wear; white/off-white leather or brown suede, no big logos; modern acceptable",
       "enabled": true
     }
   ]

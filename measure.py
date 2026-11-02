@@ -145,7 +145,7 @@ def listing_text(item):
     return '\n\n'.join(parts)
 
 
-def build_prompt(garment_type, title, text):
+def build_prompt(garment_type, title, text, strict=False):
     """(text before the photos, text after the photos) for one listing."""
     wanted = MEASUREMENTS[garment_type]
     intro = (
@@ -162,12 +162,15 @@ def build_prompt(garment_type, title, text):
         + '\n\nHow to read a tape photo:\n'
         '- The measurement is the reading on the tape where it meets the far edge of the garment. '
         'Other numbers printed along the tape are not measurements.\n'
-        '- The tape should start at 0 at the near edge. If it starts elsewhere, subtract the starting value; '
-        'if you cannot see where it starts or ends, do not report a numerical photo measurement.\n'
-        '- For photo measurements, verify the tape zero/start, the garment endpoint, and legible scale.\n'
+        '- The tape should start at 0 at the near edge. If it starts elsewhere, subtract the starting value.\n'
+        '- For photo measurements, check the tape zero/start, the garment endpoint, and that the scale is legible.\n'
         '- Set start_visible, end_visible, scale_legible to true only when each is clearly visible.\n'
         '- Set evidence_status to "verified" only when all three are true; otherwise "ambiguous".\n'
-        '- Do not return numerical photo measurements with ambiguous evidence.\n'
+        + ('- If you cannot see where the tape starts or ends, do not report a numerical photo measurement. '
+           'Do not return numerical photo measurements with ambiguous evidence.\n' if strict else
+           '- If you cannot see where the tape starts or ends, give your best reading with confidence "low", '
+           'evidence_status "ambiguous", and say why in the note.\n')
+        + 
         '- If the garment is folded or stretched, or the tape runs at a slant, use confidence "medium" or "low" and say why.\n\n'
         'Other rules:\n'
         '- "flat" is true when the measurement goes one layer across a garment lying flat (most tape photos, '
@@ -250,14 +253,25 @@ def _download(url):
     return f'data:{mime};base64,' + base64.b64encode(r.content).decode('ascii')
 
 
-def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_MODEL):
+def strict_photo_evidence():
+    """STRICT_PHOTO_EVIDENCE in .env. On: photo readings without clear tape evidence are dropped.
+    Off (default): they are kept but marked uncertain, so they can't make a listing red."""
+    return os.environ.get('STRICT_PHOTO_EVIDENCE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+UNVERIFIED_NOTE = 'DeepSeek kunne ikke bekrefte begge ender av målebåndet og skalaen'
+
+
+def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_MODEL, strict=None):
     """Send one listing (photos and text) to DeepSeek in a single request.
 
+    strict: drop photo readings without clear tape evidence (default: STRICT_PHOTO_EVIDENCE in .env).
     Returns (readings, raw reply). Raises AnalysisError on failure, AuthError for key or balance problems.
     """
+    strict = strict_photo_evidence() if strict is None else strict
     if garment_type not in MEASUREMENTS:
         raise AnalysisError(f'unknown garment type {garment_type!r}')
-    intro, task = build_prompt(garment_type, title, text)
+    intro, task = build_prompt(garment_type, title, text, strict)
     content = [{'type': 'text', 'text': intro}]
     sent = 0
     for number, url in enumerate(photos[:MAX_PHOTOS], 1):
@@ -293,11 +307,20 @@ def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_
     from measurement_gate import filter_supported_readings
     readings = parse_readings(reply, garment_type)
     accepted, rejected = filter_supported_readings(readings, reply)
-    # Preserve rejection reasons in the raw audit record without changing DB schema.
+    if not strict:
+        # Keep the readings DeepSeek couldn't back up, but mark them uncertain: the traffic light
+        # then shows "sjekk bildet" instead of trusting the number.
+        unverified = {(r.get('name'), r.get('source')) for r in rejected}
+        for reading in readings:
+            if (reading['name'], reading['source']) in unverified:
+                reading['confidence'] = 'low'
+                reading['note'] = '; '.join(filter(None, [reading['note'], UNVERIFIED_NOTE]))
+        accepted = readings
+    # Keep the gate's decisions in the raw audit record.
     if rejected:
         try:
             audit = _json_object(reply)
-            audit["rejected_photo_measurements"] = rejected
+            audit['rejected_photo_measurements' if strict else 'unverified_photo_measurements'] = rejected
             reply = json.dumps(audit, ensure_ascii=False)
         except (AnalysisError, TypeError, ValueError):
             pass

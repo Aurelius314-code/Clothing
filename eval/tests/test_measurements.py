@@ -1,11 +1,13 @@
 """Offline DeepEval regression tests: no credentials, API calls or database writes."""
 import pytest
-from deepeval import assert_test
-from deepeval.metrics import BaseMetric
-from deepeval.test_case import LLMTestCase
 
-import measure
-from measurement_benchmark import score
+pytest.importorskip("deepeval", reason="install eval/requirements-eval.txt to run the DeepEval test")
+from deepeval import assert_test  # noqa: E402
+from deepeval.metrics import BaseMetric  # noqa: E402
+from deepeval.test_case import LLMTestCase  # noqa: E402
+
+import measure  # noqa: E402
+from measurement_benchmark import score  # noqa: E402
 
 
 class GarmentMeasurementMetric(BaseMetric):

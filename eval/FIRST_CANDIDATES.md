@@ -10,18 +10,18 @@ Neither listing has independently verified tape readings yet. Seller size fields
 ## Retrieve candidate photographs with your existing eBay credentials
 
 ```powershell
-python prepare_measurement_cases.py
+python eval/prepare_measurement_cases.py
 ```
 
-This fetches full listing details via `watcher.get_item`, gathers photos with `measure.photos_from_item`, and writes `measurement_cases.csv` **only if it does not already exist**. It never changes the SQLite database, calls DeepSeek or supplies guessed measurements.
+This fetches full listing details via `watcher.get_item`, gathers photos with `measure.photos_from_item`, and writes `eval/measurement_cases.csv` **only if it does not already exist**. It never changes the SQLite database, calls DeepSeek or supplies guessed measurements.
 
 Inspect the images and manually replace the `[]` in `expected_measurements` with confirmed flat-width/length values in centimetres, for example `[{"name":"pit_to_pit","value_cm":55.9}]`. If you cannot verify an image, exclude the case rather than leaving `[]` (which means verified absence of measurements).
 
 Then run:
 
 ```powershell
-python evaluate_measurements.py --dry-run
-python evaluate_measurements.py --limit 1
+python eval/evaluate_measurements.py --dry-run
+python eval/evaluate_measurements.py --limit 1
 ```
 
 **Caution:** The dry-run validates structure, not whether the reference measurements were independently verified. Only run the live evaluation after reviewing the labels.

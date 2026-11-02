@@ -1,21 +1,26 @@
 """Run live garment-measurement evaluations against measure.py and save results locally."""
 import argparse
 import json
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from _paths import EVAL_DIR, ROOT
 import measure
 from measurement_benchmark import load_cases, score
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", default="measurement_cases.csv")
-    parser.add_argument("--output", default="measurement_results.json")
+    parser.add_argument("--dataset", default=str(EVAL_DIR / "measurement_cases.csv"))
+    parser.add_argument("--output", default=str(EVAL_DIR / "measurement_results.json"))
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--strict", dest="strict", action="store_true", default=None,
+                      help="drop photo readings without clear tape evidence")
+    mode.add_argument("--lenient", dest="strict", action="store_false",
+                      help="keep them, marked uncertain (default unless STRICT_PHOTO_EVIDENCE is set)")
     args = parser.parse_args()
     cases = load_cases(args.dataset)
     if args.limit < 0:
@@ -24,8 +29,10 @@ def main():
     if args.dry_run:
         print(f"Validated {len(cases)} cases. No DeepSeek calls made.")
         return
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(ROOT / ".env")
     key = measure.api_key()
+    strict = measure.strict_photo_evidence() if args.strict is None else args.strict
+    print(f"Photo evidence gate: {'strict' if strict else 'lenient'}")
     if not key:
         parser.error("DEEPSEEK_API_KEY missing from local .env")
     results = []
@@ -34,10 +41,11 @@ def main():
         try:
             readings, raw = measure.read_measurements(
                 case["photos"], case["garment_type"], case["title"],
-                case["description"], key, measure.model_name()
+                case["description"], key, measure.model_name(), strict=strict
             )
             result = {
                 "case_id": case["case_id"],
+                "gate": "strict" if strict else "lenient",
                 "predicted_measurements": readings,
                 "score": score(case["expected_measurements"], readings),
                 "raw_response": raw,

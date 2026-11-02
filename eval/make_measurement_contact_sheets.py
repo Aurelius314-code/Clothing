@@ -1,7 +1,7 @@
 """Download eBay benchmark photos and create labelled contact sheets locally.
 
-Usage: python make_measurement_contact_sheets.py
-Output: measurement_review/<case_id>/photo_XX.jpg and <case_id>_contact_sheet.jpg
+Usage, from the project folder: python eval/make_measurement_contact_sheets.py
+Output: eval/measurement_review/<case_id>/photo_XX.jpg and <case_id>_contact_sheet.jpg
 No API keys or DeepSeek calls; does not modify benchmark labels or SQLite.
 """
 import csv
@@ -13,9 +13,9 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageOps
 
-ROOT = Path(__file__).resolve().parent
-DATASET = ROOT / "measurement_cases.csv"
-OUTPUT = ROOT / "measurement_review"
+EVAL_DIR = Path(__file__).resolve().parent
+DATASET = EVAL_DIR / "measurement_cases.csv"
+OUTPUT = EVAL_DIR / "measurement_review"
 THUMB = (360, 300)
 COLS = 3
 GAP = 16
@@ -46,7 +46,7 @@ def download(url):
 
 def main():
     if not DATASET.exists():
-        raise SystemExit("measurement_cases.csv missing; run prepare_measurement_cases.py first")
+        raise SystemExit("measurement_cases.csv missing; run python eval/prepare_measurement_cases.py first")
     with DATASET.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     OUTPUT.mkdir(exist_ok=True)
