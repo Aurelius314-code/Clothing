@@ -101,3 +101,27 @@ def test_old_database_gets_the_new_columns(tmp_path, monkeypatch):
     monkeypatch.setattr(watcher, 'DB', db)
     with watcher.connect() as conn:
         assert conn.execute("SELECT title,price,current_bid,bid_count FROM listings").fetchone() == ('coat', 88.0, None, None)
+
+
+def test_live_tradera_item_reply():
+    """Shapes as Tradera's GET /v4/items sent them for item 758913588 (2 Nov 2026), shortened to 2 of 19 photos."""
+    guids = ['5d084ada-e184-4e26-95ab-820992455c6d', 'dea93650-b5fb-456b-a725-6c1a75227eff']
+    item = {
+        'id': 758913588, 'itemType': 1, 'totalBids': 0, 'openingBid': 590, 'nextBid': 590, 'maxBid': 0, 'buyItNowPrice': 0,
+        'shortDescription': 'Marks & Spencer Harris Tweed Kavaj Stl 52 L', 'numberOfImages': 2,
+        'itemLink': 'http://www.tradera.com/item/1000679/758913588/marks-spencer-harris-tweed-kavaj',
+        'imageLinks': [f'http://img.tradera.net/images/049/666614049_{g}.jpg' for g in guids],
+        'detailedImageLinks': [{'url': f'https://img.tradera.net/{folder}/049/666614049_{g}.jpg', 'format': fmt}
+                               for g in guids for folder, fmt in (('images', 'normal'), ('preview', 'preview'),
+                                                                  ('thumbs', 'thumbnail'), ('minithumb', 'minithumbnail'))],
+        'shippingOptions': [{'shippingOptionId': 6, 'cost': 140, 'shippingWeight': 0, 'shippingWeightSpecified': True,
+                             'shippingProductId': 10, 'shippingProductIdSpecified': True, 'shippingProviderId': 6,
+                             'sellerSurchargeSpecified': False, 'sellerDiscountSpecified': False}],
+        'acceptsPickup': False, 'shippingCondition': '',
+    }
+    assert tradera.photos(item) == [f'https://img.tradera.net/images/049/666614049_{g}.jpg' for g in guids]
+    assert tradera.cheapest_shipping(item) == 140.0
+    listing = tradera.to_listing(item)
+    assert listing['itemWebUrl'].startswith('https://www.tradera.com/item/1000679/758913588/')
+    assert listing['buyingOptions'] == ['AUCTION'] and listing['bidCount'] == 0
+    assert listing['currentBidPrice'] == {'value': '590.0', 'currency': 'SEK'}
