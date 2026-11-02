@@ -139,6 +139,8 @@ def _migrate_v08(conn):
 
 
 def connect():
+    from db_backup import automatic_backup
+    automatic_backup(DB)  # snapshot before any schema migrations or writes
     conn = sqlite3.connect(DB)
     conn.execute('''CREATE TABLE IF NOT EXISTS listings (
         item_id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT, image_url TEXT,
