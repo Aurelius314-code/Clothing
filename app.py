@@ -18,7 +18,7 @@ import listing_inspector
 import marketplaces
 import tradera
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, fingerprint, garment_types, has_flag,
-                     is_auction_only, listing_key, listing_photos, resolve_ebay_url, save_checked_measurements, set_flag,
+                     listing_key, listing_photos, resolve_ebay_url, save_checked_measurements, set_flag,
                      store_photos, utc_now, token, _ebay_headers, ingest)
 
 st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layout='wide')
@@ -115,6 +115,24 @@ def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
 
 def money(value, currency):
     return f'{value:.2f} {currency}' if value is not None else '?'
+
+
+def price_text(price, currency, options, current_bid=None, bid_count=None):
+    """The price line: a buy-now price, an auction's bid (opening bid when nobody has bid yet), or both."""
+    options = set((options or '').split(','))
+    if 'AUCTION' not in options:
+        return money(price, currency)
+    buy_now = 'FIXED_PRICE' in options and price is not None and current_bid is not None and price != current_bid
+    bid = current_bid if current_bid is not None else (None if 'FIXED_PRICE' in options else price)
+    if bid is None:
+        return f'{money(price, currency)} kjøp nå (også auksjon)'
+    if bid_count == 0:
+        bid_text = f'startbud {money(bid, currency)}, ingen bud ennå'
+    elif bid_count:
+        bid_text = f'gjeldende bud {money(bid, currency)} ({bid_count} bud)'
+    else:
+        bid_text = f'gjeldende bud {money(bid, currency)}'
+    return f'{money(price, currency)} kjøp nå · auksjon: {bid_text}' if buy_now else f'Auksjon: {bid_text}'
 
 
 with connect() as conn:
@@ -275,7 +293,7 @@ with connect() as conn:
             by_id = {row[0]: row for row in conn.execute(f'''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
               l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
               COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
-              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint)
+              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint),l.current_bid,l.bid_count
               FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
               WHERE l.item_id IN ({','.join('?' * len(page_ids))})''', page_ids)}
             rows = [by_id[i] for i in page_ids]
@@ -293,7 +311,7 @@ with connect() as conn:
                     f'SELECT item_id,url FROM listing_photos WHERE item_id IN ({marks}) ORDER BY item_id,position', ids):
                 photos.setdefault(item_id, []).append(photo_url)
         for (iid, title, url, img, seller, price, currency, ship, ship_currency, options,
-             first, last, status, notes, similar) in rows:
+             first, last, status, notes, similar, current_bid, bid_count) in rows:
             with st.container(border=True):
                 left, right = st.columns([1, 4])
                 with left:
@@ -303,12 +321,12 @@ with connect() as conn:
                     verdict = verdicts.get(iid, unknown)
                     reasons = '; '.join(verdict.reasons)
                     st.markdown(f'{fit.LABELS[verdict.colour]}' + (f' – {reasons}' if reasons else ''))
-                    price_text = money(price, currency) + (' (gjeldende bud, auksjon)' if is_auction_only(options) else '')
+                    shown_price = price_text(price, currency, options, current_bid, bid_count)
                     if ship is not None:
-                        price_text += f' + frakt {money(ship, ship_currency)}'
+                        shown_price += f' + frakt {money(ship, ship_currency)}'
                     elif iid.startswith(tradera.KEY_PREFIX):
-                        price_text += ' + frakt til Norge (se annonsen)'
-                    st.write(f'{price_text} · {seller or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
+                        shown_price += ' + frakt til Norge (se annonsen)'
+                    st.write(f'{shown_price} · {seller or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
                     source_name = 'Tradera' if iid.startswith(tradera.KEY_PREFIX) else 'eBay' if iid.startswith('v1|') else 'Lagt inn manuelt'
                     st.caption(f'{source_name} · Først sett: {first} · Sist sett: {last}')
@@ -598,7 +616,9 @@ with connect() as conn:
     with tab_europe:
         st.header('Europeiske vintage-markedsplasser')
         st.caption('Tradera, Sellpy, Vestiaire Collective, Grailed, Vinted og Kleinanzeigen. '
-                   'Manuell import fungerer nå; automatisk uthenting krever separat, autorisert integrasjon.')
+                   'Manuell import fungerer nå; automatisk uthenting krever separat, autorisert integrasjon. '
+                   'Tradera søkes også automatisk med watcher.py, og en Tradera-annonse lagres bare én gang '
+                   'uansett hvor den kommer fra.')
         with st.form('european_import'):
             eu_url = st.text_input('Annonse-URL', placeholder='https://www.tradera.com/item/343837/753582030/...')
             eu_title = st.text_input('Annonsetittel')

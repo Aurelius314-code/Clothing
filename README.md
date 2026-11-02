@@ -87,7 +87,7 @@ python -m pytest -q tests eval/tests                 # offline tests, no API key
 3. Keep your own `wardrobe.json`, `wardrobe.sqlite3` and `.env`. New tables are added on first start; nothing is removed.
 4. From v0.5: coats and outerwear now have their own targets, separate from jackets, because they are worn over a jacket.
 5. From v0.6: readings already stored are labelled *Eldre måling* (older reading); new analyses get the new labels.
-6. From v0.8: only measurements you have checked under **✔️ Kontroller mål** give a colour, so listings are ⚪ until you check them. Add `TRADERA_APP_ID` and `TRADERA_APP_KEY` to `.env` to search Tradera as well (see `.env.example`).
+6. From v0.8: only measurements you have checked under **✔️ Kontroller mål** give a colour, so listings are ⚪ until you check them. Add `TRADERA_APP_ID` and `TRADERA_APP_KEY` to `.env` to search Tradera as well (see `.env.example`). Tradera listings imported in the 🌍 tab before v0.8 get their Tradera item number on the first start, so they merge with the same listing from the search. Auctions now show the opening bid when nobody has bid, and both prices when a listing also has a buy-now price.
 
 From v0.3, the first start also fixes the wardrobe targets of the two seeded pleated trousers (assign them in the garment register), re-keys hand-entered eBay listings to their item number, and moves listing notes to the reviews.
 

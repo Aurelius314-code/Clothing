@@ -6,6 +6,8 @@ description or an authorized API separately.
 import hashlib
 from urllib.parse import urlparse
 
+import tradera
+
 MARKETS = {
     "tradera.com": "Tradera",
     "sellpy.com": "Sellpy",
@@ -38,6 +40,11 @@ def listing_key(url):
     marketplace = identify(url)
     if not marketplace:
         raise ValueError("Unsupported marketplace URL")
+    # A Tradera listing gets the same key as in Tradera's search ('tradera:<item number>'),
+    # so importing it here and finding it in a search never stores it twice.
+    known = tradera.item_key(url)
+    if known:
+        return known
     parsed = urlparse(url.strip())
     canonical = parsed.hostname.lower() + parsed.path.rstrip("/")
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]

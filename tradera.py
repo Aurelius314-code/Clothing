@@ -17,6 +17,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -28,7 +29,7 @@ KEY_PREFIX = 'tradera:'
 CURRENCY = 'SEK'  # Tradera prices are whole Swedish kronor
 MAX_PAGES = 20    # safety net for one search term
 # https://www.tradera.com/item/1640/654970712/gant-ullkavaj -> 654970712 (category / item number / title)
-ITEM_URL = re.compile(r'tradera\.com/(?:[a-z]{2}/)?item/\d+/(\d{5,10})(?!\d)', re.IGNORECASE)
+ITEM_PATH = re.compile(r'^/(?:[a-z]{2}/)?item/\d+/(\d{5,10})(?:/|$)', re.IGNORECASE)
 
 
 class TraderaError(Exception):
@@ -47,8 +48,13 @@ def credentials():
 
 
 def item_key(url):
-    """'tradera:<item number>' for a Tradera listing URL, else None."""
-    match = ITEM_URL.search(url or '')
+    """'tradera:<item number>' for a Tradera listing URL, else None. The website must be Tradera itself."""
+    value = (url or '').strip()
+    parsed = urlparse(value if '://' in value else 'https://' + value)
+    host = (parsed.hostname or '').lower()
+    if parsed.scheme not in ('http', 'https') or not (host == 'tradera.com' or host.endswith('.tradera.com')):
+        return None
+    match = ITEM_PATH.match(parsed.path)
     return KEY_PREFIX + match.group(1) if match else None
 
 
@@ -122,16 +128,40 @@ def _links(entries):
     return out
 
 
+def _photo_name(url):
+    """The file name of an image link, which the sizes of one photo usually share."""
+    return url.split('?')[0].rstrip('/').rsplit('/', 1)[-1].lower()
+
+
+def _largest_per_photo(links):
+    """One link per photo, the largest size offered for it, in listing order. [] if sizes aren't named.
+
+    Tradera gives each photo in several sizes. When the sizes of one photo share a file name, each
+    photo gets its own largest size. Otherwise the largest size that every photo has is used, so a
+    photo offered only in a smaller size is never dropped.
+    """
+    sized = [(url, _format_rank(fmt)) for url, fmt in links if _format_rank(fmt)]
+    if not sized:
+        return []
+    by_size = {}
+    for url, rank in sized:
+        by_size.setdefault(rank, [])
+        if url not in by_size[rank]:
+            by_size[rank].append(url)
+    most = max(len(urls) for urls in by_size.values())  # the number of photos
+    groups = {}
+    for url, rank in sized:
+        groups.setdefault(_photo_name(url), []).append((rank, url))
+    if len(groups) == most:
+        return [max(group, key=lambda pair: pair[0])[1] for group in groups.values()]
+    return by_size[max(rank for rank, urls in by_size.items() if len(urls) == most)]
+
+
 def photos(item):
     """The listing's photos, one size per photo (the largest offered), https, in listing order."""
     detailed = _links(_list(_get(item, 'detailedImageLinks'), 'ImageLink'))
     plain = _links(_list(_get(item, 'imageLinks'), 'ImageLink'))
-    urls = []
-    for links in (detailed, plain):
-        best = max((_format_rank(fmt) for _, fmt in links), default=0)
-        if best:
-            urls = [url for url, fmt in links if _format_rank(fmt) == best]
-            break
+    urls = _largest_per_photo(detailed) or _largest_per_photo(plain)
     if not urls:
         urls = [url for url, _ in plain or detailed]
     if not urls and _get(item, 'thumbnailLink'):
@@ -153,9 +183,16 @@ def to_listing(item):
                'itemWebUrl': _get(item, 'itemUrl') or _get(item, 'itemLink') or '',
                'seller': {'username': _get(item, 'sellerAlias') or _get(_get(item, 'seller'), 'alias') or ''}}
     if _is_auction(item):
-        bids = _get(item, 'hasBids') or (_number(item, 'bidCount') or _number(item, 'totalBids') or 0) > 0
+        raw_count = _get(item, 'bidCount') if _get(item, 'bidCount') is not None else _get(item, 'totalBids')
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            count = 0 if _get(item, 'hasBids') is False else None  # unknown when Tradera doesn't say
+        bids = bool(count) or _get(item, 'hasBids') is True
         current = (_number(item, 'maxBid') if bids else None) or _number(item, 'nextBid') or _number(item, 'openingBid')
         listing['buyingOptions'] = ['AUCTION'] + (['FIXED_PRICE'] if buy_now else [])
+        if count is not None:
+            listing['bidCount'] = count
         if current:
             listing['currentBidPrice'] = {'value': str(current), 'currency': CURRENCY}
     else:

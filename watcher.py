@@ -26,9 +26,11 @@ CATALOG = ROOT / 'wardrobe.json'
 REVIEW_STATUSES = ('unreviewed', 'saved', 'rejected', 'purchased')
 MAX_ATTEMPTS = 3  # a listing whose analysis keeps failing is given up after this many tries
 SHORT_LINK_HOSTS = {'ebay.us', 'ebay.io'}  # share links from the eBay app, without the item number
-# Matches both https://www.ebay.co.uk/itm/123456789012 and the older
-# https://www.ebay.com/itm/Some-Title-Words/123456789012 form, ignoring tracking parameters.
-EBAY_ITEM_URL = re.compile(r'ebay\.[a-z.]+/itm/(?:[^/?#]+/)?(\d{9,15})(?!\d)', re.IGNORECASE)
+# The website must be eBay itself (www.ebay.co.uk, ebay.com, ebay.com.au ...), not a lookalike such as
+# ebay.com.example.net or notebay.com. The path matches both /itm/123456789012 and the older
+# /itm/Some-Title-Words/123456789012 form; tracking parameters are ignored.
+EBAY_HOST = re.compile(r'(?:^|\.)ebay\.[a-z]{2,3}(?:\.[a-z]{2})?$', re.IGNORECASE)
+EBAY_ITEM_PATH = re.compile(r'^/itm/(?:[^/]+/)?(\d{9,15})(?:/|$)', re.IGNORECASE)
 
 
 def utc_now():
@@ -42,7 +44,10 @@ def ebay_item_key(url):
     by the API search end up as one record. (Listings with size/colour variations get a
     different suffix from the API, so those can still appear twice.)
     """
-    match = EBAY_ITEM_URL.search(url or '')
+    parsed = urlparse((url or '').strip())
+    if parsed.scheme not in ('http', 'https') or not EBAY_HOST.search(parsed.hostname or ''):
+        return None
+    match = EBAY_ITEM_PATH.match(parsed.path)
     return f'v1|{match.group(1)}|0' if match else None
 
 
@@ -111,6 +116,28 @@ def _migrate_v04(conn):
     set_flag(conn, 'migrated_v0.4')
 
 
+LISTING_TABLES = ('listings', 'price_history', 'matches', 'listing_reviews', 'listing_photos',
+                  'listing_analysis', 'listing_measurements', 'listing_source_snapshots')
+
+
+def _migrate_v08(conn):
+    """Tradera listings imported in the European tab before v0.8 were keyed by a code made from the
+    link; give them their item number, as the Tradera search does. Runs once per database file."""
+    if has_flag(conn, 'migrated_v0.8'):
+        return
+    tables = [t for t in LISTING_TABLES if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()]
+    for old_key, url in conn.execute("SELECT item_id,url FROM listings WHERE item_id LIKE 'tradera:%'").fetchall():
+        suffix = old_key[len(tradera.KEY_PREFIX):]
+        new_key = tradera.item_key(url)
+        if (suffix.isdigit() and len(suffix) <= 10) or not new_key or \
+                conn.execute('SELECT 1 FROM listings WHERE item_id=?', (new_key,)).fetchone():
+            continue  # already an item number, no item number in the link, or that listing exists: leave it
+        for table in tables:
+            conn.execute(f'UPDATE {table} SET item_id=? WHERE item_id=?', (new_key, old_key))
+    set_flag(conn, 'migrated_v0.8')
+
+
 def connect():
     conn = sqlite3.connect(DB)
     conn.execute('''CREATE TABLE IF NOT EXISTS listings (
@@ -121,6 +148,10 @@ def connect():
     _add_column(conn, 'listings', 'buying_options', "TEXT DEFAULT ''")
     _add_column(conn, 'listings', 'shipping_cost', 'REAL')
     _add_column(conn, 'listings', 'shipping_currency', "TEXT DEFAULT ''")
+    # Auctions: the leading bid (or the opening bid when nobody has bid) and how many bids there are.
+    # NULL when the source didn't say. For a listing with a buy-now price too, `price` is the buy-now price.
+    _add_column(conn, 'listings', 'current_bid', 'REAL')
+    _add_column(conn, 'listings', 'bid_count', 'INTEGER')
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
         item_id TEXT NOT NULL, observed_at TEXT NOT NULL, price REAL,
         currency TEXT, PRIMARY KEY(item_id, observed_at))''')
@@ -155,6 +186,7 @@ def connect():
         PRIMARY KEY(garment_type, name))''')
     _add_column(conn, 'listing_measurements', 'verification_status', "TEXT NOT NULL DEFAULT 'legacy_unverified'")
     _migrate_v04(conn)
+    _migrate_v08(conn)
     conn.commit()
     return conn
 
@@ -253,16 +285,22 @@ def ingest(conn, item, wardrobe_id=None):
     shipping_cost, shipping_currency = _cheapest_shipping(item)
     buying_options = ','.join(item.get('buyingOptions') or [])
     image_url = (item.get('image') or {}).get('imageUrl', '')
+    current_bid = _money(item.get('currentBidPrice'))[0]
+    try:
+        bid_count = int(item['bidCount'])
+    except (KeyError, TypeError, ValueError):
+        bid_count = None
     old = conn.execute('SELECT price,currency FROM listings WHERE item_id=?', (item_id,)).fetchone()
     conn.execute('''INSERT INTO listings(item_id,title,url,image_url,seller,price,currency,first_seen,last_seen,
-        fingerprint,buying_options,shipping_cost,shipping_currency)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        fingerprint,buying_options,shipping_cost,shipping_currency,current_bid,bid_count)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
         title=excluded.title,url=excluded.url,image_url=excluded.image_url,
         seller=excluded.seller,price=excluded.price,currency=excluded.currency,
         last_seen=excluded.last_seen,fingerprint=excluded.fingerprint,buying_options=excluded.buying_options,
-        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency''',
+        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency,
+        current_bid=excluded.current_bid,bid_count=excluded.bid_count''',
         (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
-         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency))
+         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, current_bid, bid_count))
     if not listing_photos(conn, item_id):
         # The full photo list replaces these when the listing is analysed, so photo numbers stay stable.
         store_photos(conn, item_id, measure.photos_from_item(item))
