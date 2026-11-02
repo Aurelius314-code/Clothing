@@ -1,4 +1,4 @@
-# Vintage Wardrobe Watcher v0.7 – Windows / PyCharm
+# Vintage Wardrobe Watcher v0.8 – Windows / PyCharm
 
 ## Install
 Open the folder in PyCharm. In the PyCharm terminal with the project interpreter active:
@@ -10,24 +10,45 @@ python -m streamlit run app.py
 
 Streamlit normally opens http://localhost:8501 in your browser. Press Ctrl+C in the terminal to stop it.
 
-Copy `.env.example` to `.env` and fill in your eBay keys, plus `DEEPSEEK_API_KEY` if you want measurements read from listing photos. Never share `.env`.
+Copy `.env.example` to `.env` and fill in your eBay keys and/or Tradera keys, plus `DEEPSEEK_API_KEY` if you want measurements read from listing photos. Never share `.env`.
 
-## Searching eBay and reading measurements
+## Searching eBay and Tradera, and reading measurements
 
 ```powershell
-python watcher.py                                   # search eBay, then write report.html
+python watcher.py                                   # search eBay and Tradera, then write report.html
+python watcher.py --source tradera                  # search only Tradera (or --source ebay)
 python watcher.py --analyze-images                  # search, then read measurements from new listings
 python watcher.py --report-only --analyze-images    # read measurements only, no new search
 ```
 
 With `--analyze-images`, each listing found for a jacket, coat, trousers, knitwear or shirt is read once by DeepSeek:
 
-- The app fetches the full listing from eBay: every photo at full size, the description and the item specifics.
+- The app fetches the full listing from eBay or Tradera: every photo at full size, the description and the item specifics.
 - DeepSeek reads the measurements for that type of garment (for example pit to pit, shoulders, sleeve and back length for a jacket), from the tape photos and the text. For each one it says which photo it came from, whether it was measured flat or all the way round, and how sure it is.
 - DeepSeek also says, for each photo reading, whether both ends of the tape and the scale are clearly visible. Readings where they aren't are marked uncertain. Set `STRICT_PHOTO_EVIDENCE=1` in `.env` to drop them instead.
 - The app converts everything to cm, with widths stored flat, and shows it on the listing in **Annonser**, next to the photos, with where it came from: *AI-estimat* (read from a photo) or *Oppgitt av selger* (from the text). Neither is verified, and uncertain readings are marked so you know which photo to check.
 
 Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to change it). Listings already analysed are not sent again, rejected listings are skipped, and accessories, shoes and basics are left out because they are bought by size. A failed analysis is shown in the app and retried on the next run, up to 3 times. A wrong key or an empty DeepSeek balance stops the analysis with a message.
+
+## Tradera
+
+Tradera is searched as well when `TRADERA_APP_ID` and `TRADERA_APP_KEY` are in `.env`. Both are free: make a developer account at https://api.tradera.com/register and create an application there. Tradera allows 10,000 calls a day per method, which is far more than one run uses.
+
+- **Search words** are Swedish and live in `tradera.json`, per wardrobe ID (for example `"W005": ["harris tweed kavaj", "tweedkavaj herr"]`). A wardrobe target without Swedish words is searched with its English words from `wardrobe.json`. When you add a target to the plan, add Swedish words for it here too.
+- **Categories:** clothes are searched in *Herrkläder* (302074); shoes, accessories and basics in all categories. Change this under `categories` in `tradera.json`.
+- **Prices** are in SEK. Auctions show the current bid, or the next bid if nobody has bid yet. The search filters under **⚙️ Søkefiltre** apply too, but a price limit in GBP doesn't stop SEK listings.
+- **Shipping:** Tradera's API only gives the price within Sweden, and a seller can choose to ship only within Sweden. The app doesn't show a shipping price for Tradera listings, so check on the listing that the seller ships to Norway and what it costs. Norwegian import VAT and the carrier's customs handling fee can come on top.
+- Tradera listings are analysed by DeepSeek like eBay listings, with Swedish measurement words (axelbredd, ärmlängd, midja, grenhöjd, innerbenslängd …) explained in the prompt.
+- Tradera links work in **➕ Legg til annonse** and in `test_one.py`.
+
+Tradera's REST API is still in beta, and its search reply isn't fully documented, so try it once with your keys before the first full run:
+
+```powershell
+python tradera.py "harris tweed kavaj"                                   # 5 results in Herrkläder and in all categories
+python tradera.py https://www.tradera.com/item/1640/654970712/gant-ullkavaj   # one listing, as the app will store it
+```
+
+If it prints *unexpected search reply*, the field names it lists show what Tradera sent, and the parsing in `tradera.py` needs updating to match.
 
 ## Traffic light
 
@@ -38,7 +59,9 @@ Each listing in **🔎 Annonser** then gets a colour, with the reason:
 - 🟢 **Passer**: every judged measurement is inside your range, and the key ones are known (for example pit to pit and shoulders for jackets, waist and front rise for trousers).
 - 🟡 **Kanskje**: something a tailor can usually fix (a waist that can be taken in, sleeves that can be shortened), a measurement just outside your range, a key measurement missing, or an uncertain reading to check in the photo.
 - 🔴 **Passer ikke**: a measurement clearly outside your range that can't be fixed, such as shoulders, rise or knitwear.
-- ⚪ **Ukjent**: not analysed yet, no measurements shown, no targets set, or bought by size.
+- ⚪ **Ukjent**: not analysed yet, no measurements shown, no targets set, bought by size, or measurements you haven't checked yet.
+
+Only measurements you have checked yourself count. Under each listing, open **✔️ Kontroller mål**, compare each number with the photo or the text, and tick *Kontrollert* for the ones that are right. Correct a wrong number, empty a field to remove a wrong reading, or fill in a measurement the analysis missed; corrected and new numbers are saved as checked. Until then the listing stays ⚪, but the reason shows what it would get (for example *foreløpig 🟢*), so you can see which listings are worth checking. Checked measurements are kept if the listing is analysed again.
 
 Red listings are hidden by default; choose them in the Trafikklys filter to see them, and sort by *Beste treff først* to see green first. An uncertain reading never makes a listing red. The rules of thumb for what can be altered, and by how much, are in `fit.py`.
 
@@ -46,6 +69,7 @@ To try the reading on a single listing or photo without saving anything:
 
 ```powershell
 python test_one.py https://www.ebay.co.uk/itm/123456789012 trousers
+python test_one.py https://www.tradera.com/item/1640/654970712/gant-ullkavaj jacket
 python check.py                                     # how many listings are analysed, latest readings and errors
 ```
 
@@ -63,6 +87,7 @@ python -m pytest -q tests eval/tests                 # offline tests, no API key
 3. Keep your own `wardrobe.json`, `wardrobe.sqlite3` and `.env`. New tables are added on first start; nothing is removed.
 4. From v0.5: coats and outerwear now have their own targets, separate from jackets, because they are worn over a jacket.
 5. From v0.6: readings already stored are labelled *Eldre måling* (older reading); new analyses get the new labels.
+6. From v0.8: only measurements you have checked under **✔️ Kontroller mål** give a colour, so listings are ⚪ until you check them. Add `TRADERA_APP_ID` and `TRADERA_APP_KEY` to `.env` to search Tradera as well (see `.env.example`).
 
 From v0.3, the first start also fixes the wardrobe targets of the two seeded pleated trousers (assign them in the garment register), re-keys hand-entered eBay listings to their item number, and moves listing notes to the reviews.
 
@@ -75,8 +100,9 @@ From the first DeepSeek version: its readings were lists of numbers from the tap
 - Manual entry for listings. eBay links, including share links from the eBay app (`ebay.us/…`, `ebay.io/…`), are recognised by item number, so the same listing updates one record and merges with the API record for it. New notes are added under earlier ones with the date.
 - Listing reviews with paging (50 per page) that stays on the same page after a review, and possible relisting warnings based on seller + normalized title.
 - eBay API search that only returns sellers who ship to `EBAY_SHIP_TO_COUNTRY`, stores the cheapest shipping quote, and keeps auction bid changes out of the price history.
+- Tradera API search with Swedish search words per wardrobe target (`tradera.json`).
 - Measurements read from listing photos and text by DeepSeek, shown in the app and in `report.html`.
-- Traffic light per listing against your own target ranges, with filtering and sorting by colour.
+- Traffic light per listing against your own target ranges, based on measurements you have checked, with filtering and sorting by colour.
 - A benchmark and diagnostics for the photo reading in `eval/`.
 
 ## Important limitations

@@ -110,7 +110,9 @@ def judge_listing(garment_type, readings, targets):
         if name not in wanted:
             continue
         if verification_status != 'human_verified':
-            per_reading[name] = (GREY, f'{measure.LABELS.get(name, name)} er ikke manuelt verifisert')
+            # Still grey, but say what the reading would give, so you know which listings are worth checking.
+            hint = '' if confidence == 'low' else f' (foreløpig {DOTS[judge_reading(garment_type, name, value_cm, *wanted[name])[0]]})'
+            per_reading[name] = (GREY, f'{measure.LABELS.get(name, name)} er ikke manuelt verifisert{hint}')
             continue
         colour, text = judge_reading(garment_type, name, value_cm, *wanted[name])
         if confidence == 'low':

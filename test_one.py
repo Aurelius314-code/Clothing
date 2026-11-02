@@ -1,6 +1,6 @@
 """Try the DeepSeek measurement reading on one listing or one photo, without saving anything.
 
-    python test_one.py <eBay listing link> [jacket|coat|waistcoat|trousers|knitwear|shirt]
+    python test_one.py <eBay or Tradera listing link> [jacket|coat|waistcoat|trousers|knitwear|shirt]
     python test_one.py <photo address from i.ebayimg.com> [jacket|coat|waistcoat|trousers|knitwear|shirt]
 
 The garment type defaults to the one the listing matched in your database, or jacket.
@@ -10,6 +10,7 @@ import sys
 from dotenv import load_dotenv
 
 import measure
+import tradera
 import watcher
 
 load_dotenv(watcher.ROOT / '.env')
@@ -24,10 +25,19 @@ if not measure.api_key():
 
 if 'ebayimg.com' in link:
     photos, title, text = [measure.full_size_photo(link)], '(single photo test)', ''
+elif tradera.item_key(link):
+    item_id = tradera.item_key(link)
+    with watcher.connect() as conn:
+        garment_type = garment_type or watcher.garment_types(conn).get(item_id)
+    try:
+        full = tradera.get_item(item_id)
+    except (tradera.TraderaError, watcher.requests.RequestException) as exc:
+        sys.exit(f'Tradera: {exc}')
+    photos, title, text = tradera.photos(full), tradera.to_listing(full).get('title', ''), tradera.listing_text(full)
 else:
     item_id = watcher.ebay_item_key(watcher.resolve_ebay_url(link))
     if not item_id:
-        sys.exit('That does not look like an eBay listing link')
+        sys.exit('That does not look like an eBay or Tradera listing link')
     with watcher.connect() as conn:
         garment_type = garment_type or watcher.garment_types(conn).get(item_id)
     full = watcher.get_item(item_id, watcher.token())

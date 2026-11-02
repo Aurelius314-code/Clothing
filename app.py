@@ -15,8 +15,10 @@ import measure
 import search_prefilter
 import group_priority
 import listing_inspector
-from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
-                     has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now, token, _ebay_headers, ingest)
+import tradera
+from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, fingerprint, garment_types, has_flag,
+                     is_auction_only, listing_key, listing_photos, resolve_ebay_url, save_checked_measurements, set_flag,
+                     store_photos, utc_now, token, _ebay_headers, ingest)
 
 st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layout='wide')
 
@@ -73,7 +75,7 @@ def md(text):
 def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
     """Save a listing entered by hand. `url` should already be resolved if it was a share link."""
     url = url.strip()
-    key = ebay_item_key(url) or 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]
+    key = listing_key(url) or 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]
     old = conn.execute('SELECT price,currency,seller,image_url FROM listings WHERE item_id=?', (key,)).fetchone()
     # Blank optional fields keep what is already stored, e.g. the seller from an earlier API search.
     seller = seller.strip() or (old[2] if old else '')
@@ -233,7 +235,7 @@ with connect() as conn:
 
     with tab_listings:
         st.header('Annonsearkiv')
-        st.caption('Gamle annonser beholdes, også når de ikke lenger er aktive på eBay.')
+        st.caption('Gamle annonser beholdes, også når de ikke lenger er aktive på eBay eller Tradera.')
         top_left, top_mid, top_right = st.columns([1, 2, 1])
         filter_status = top_left.selectbox('Vurdering', ['Alle', *REVIEW_STATUSES], format_func=lambda s: STATUS_LABELS.get(s, s))
         colours = top_mid.multiselect('Trafikklys', list(fit.COLOURS), default=[fit.GREEN, fit.YELLOW, fit.GREY],
@@ -296,9 +298,12 @@ with connect() as conn:
                     price_text = money(price, currency) + (' (gjeldende bud, auksjon)' if is_auction_only(options) else '')
                     if ship is not None:
                         price_text += f' + frakt {money(ship, ship_currency)}'
+                    elif iid.startswith(tradera.KEY_PREFIX):
+                        price_text += ' + frakt til Norge (se annonsen)'
                     st.write(f'{price_text} · {seller or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
-                    st.caption(f'Først sett: {first} · Sist sett: {last}')
+                    source_name = 'Tradera' if iid.startswith(tradera.KEY_PREFIX) else 'eBay' if iid.startswith('v1|') else 'Lagt inn manuelt'
+                    st.caption(f'{source_name} · Først sett: {first} · Sist sett: {last}')
                     if similar > 1: st.warning(f'{similar} annonser med samme selger og normalisert tittel – mulig relisting, ikke bekreftet.')
                     found = sorted(readings.get(iid, []), key=lambda r: measure.ORDER.index(r[0]))
                     analysis = analyses.get(iid)
@@ -308,7 +313,7 @@ with connect() as conn:
                         for name, value_cm, raw_value, raw_unit, flat, source, confidence, note, verification_status in found:
                             label = measure.LABELS.get(name, name) + (' (flatt)' if name in measure.WIDTHS else '')
                             raw = f'{raw_value:g} {raw_unit}' + (', målt rundt' if name in measure.WIDTHS and not flat else '')
-                            where_from = source.replace('photo', 'bilde').replace('text', 'teksten')
+                            where_from = source.replace('photo', 'bilde').replace('text', 'teksten').replace('manual', 'lagt inn av deg')
                             dot = fit.DOTS[verdict.per_reading[name][0]] + ' ' if name in verdict.per_reading else ''
                             status_text = {'provisional': 'AI-estimat – ikke verifisert', 'seller_unverified': 'Oppgitt av selger – ikke verifisert', 'legacy_unverified': 'Eldre måling – ikke verifisert', 'human_verified': 'Manuelt verifisert'}.get(verification_status, 'Ikke verifisert')
                             line = f'- {dot}{label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {status_text} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
@@ -318,6 +323,7 @@ with connect() as conn:
                                                      else f'minst {low:g}' if low is not None else f'høyst {high:g}') + ' cm'
                             lines.append(line + (f' – {md(note)}' if note else ''))
                         st.markdown('**Mål fra annonsen (AI-mål er ikke verifiserte passformmål)**\n' + '\n'.join(lines))
+                        st.caption('Bare mål du har kontrollert gir trafikklys. Sjekk dem under «Kontroller mål».')
                     elif analysis and analysis[0] == 'ok':
                         st.caption('Mål fra annonsen: ingen mål vist i bildene eller teksten.')
                     elif analysis and analysis[0] == 'error':
@@ -326,6 +332,32 @@ with connect() as conn:
                     shown = photos.get(iid) or ([measure.full_size_photo(img)] if img and safe_url(img) else [])
                     if shown and st.toggle(f'Vis bilder ({len(shown)})', key='ph' + iid):
                         st.image(shown, width=240, caption=[f'Bilde {n}' for n in range(1, len(shown) + 1)])
+                    kind = types.get(iid)
+                    if kind in measure.MEASUREMENTS:
+                        saved = st.session_state.get('checked_saved')
+                        if saved and saved[0] == iid:
+                            st.session_state.pop('checked_saved')
+                            st.success(f'{saved[1]} mål oppdatert. Trafikklyset bruker nå de kontrollerte målene.' if saved[1] else 'Ingen endringer.')
+                        checked_count = sum(r[8] == 'human_verified' for r in found)
+                        with st.expander('✔️ Kontroller mål' + (f' ({checked_count} av {len(found)} kontrollert)' if found else '')):
+                            st.caption('Sjekk hvert mål mot bildet eller teksten i annonsen, i cm med bredder flatt. Kryss av for '
+                                       'mål som stemmer, rett tall som er feil, tøm feltet for å fjerne et feil mål, eller fyll inn '
+                                       'mål analysen ikke fant. Rettede og nye mål lagres som kontrollert.')
+                            by_name = {r[0]: r for r in found}
+                            with st.form('check' + iid):
+                                entries = {}
+                                for name in measure.MEASUREMENTS[kind]:
+                                    row = by_name.get(name)
+                                    label = measure.LABELS[name] + (' (flatt)' if name in measure.WIDTHS else '')
+                                    value_col, check_col = st.columns([3, 1], vertical_alignment='bottom')
+                                    value = value_col.number_input(label, min_value=0.0, max_value=200.0, value=float(row[1]) if row else None,
+                                                                   step=0.5, format='%.1f', key=f'cv_{iid}_{name}')
+                                    checked = check_col.checkbox('Kontrollert', value=bool(row and row[8] == 'human_verified'),
+                                                                 key=f'cc_{iid}_{name}', disabled=row is None)
+                                    entries[name] = (value, checked)
+                                if st.form_submit_button('Lagre kontroll'):
+                                    st.session_state['checked_saved'] = (iid, save_checked_measurements(conn, iid, kind, entries))
+                                    st.rerun()
                     with st.form('review' + iid):
                         choice = st.selectbox('Vurdering', REVIEW_STATUSES, index=REVIEW_STATUSES.index(status) if status in REVIEW_STATUSES else 0,
                                               format_func=STATUS_LABELS.get, key='rs' + iid)
@@ -338,8 +370,9 @@ with connect() as conn:
 
     with tab_add:
         st.header('Manuell annonseimport')
-        st.caption('Samme eBay-annonse oppdaterer den eksisterende registreringen, også om lenken har andre sporingsparametere '
-                   'eller er en delelenke fra eBay-appen (ebay.us/…, ebay.io/…). Bildene og målene hentes ved neste analyse.')
+        st.caption('Samme eBay- eller Tradera-annonse oppdaterer den eksisterende registreringen, også om lenken har andre '
+                   'sporingsparametere eller er en delelenke fra eBay-appen (ebay.us/…, ebay.io/…). Bildene og målene hentes '
+                   'ved neste analyse. Tradera-priser er i SEK.')
         with st.form('manual'):
             title = st.text_input('Annonsetittel *')
             url = st.text_input('Annonse-URL *')

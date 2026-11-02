@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 import measure
 import search_prefilter
 import group_priority
+import tradera
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
@@ -43,6 +44,16 @@ def ebay_item_key(url):
     """
     match = EBAY_ITEM_URL.search(url or '')
     return f'v1|{match.group(1)}|0' if match else None
+
+
+def listing_key(url):
+    """The database key for an eBay or Tradera listing URL, else None."""
+    return ebay_item_key(url) or tradera.item_key(url)
+
+
+def can_fetch_full_listing(item_id):
+    """True for listings whose full photos and description can be fetched again from an API."""
+    return item_id.startswith(('v1|', tradera.KEY_PREFIX))
 
 
 def resolve_ebay_url(url):
@@ -301,7 +312,7 @@ def pending_analysis(conn, limit):
     for item_id, title, image_url in rows:
         if item_id in types:
             photos = listing_photos(conn, item_id) or ([measure.full_size_photo(image_url)] if image_url else [])
-            if not photos and not item_id.startswith('v1|'):
+            if not photos and not can_fetch_full_listing(item_id):
                 continue  # added by hand from another site without a photo: nothing to read
             jobs.append((item_id, title, types[item_id], photos))
             if len(jobs) >= limit:
@@ -320,6 +331,13 @@ def _analyze_one(job, access_token, key, model):
             text = measure.listing_text(full)
         except requests.RequestException:
             pass  # ended or unreachable listing: fall back to the photos stored from the search
+    elif item_id.startswith(tradera.KEY_PREFIX) and tradera.credentials():
+        try:
+            full = tradera.get_item(item_id)
+            photos = tradera.photos(full) or photos
+            text = tradera.listing_text(full)
+        except (requests.RequestException, tradera.TraderaError):
+            pass  # ended or unreachable listing: fall back to the photos stored from the search
     if not photos and not text:
         raise measure.AnalysisError('no photos available (the listing may have ended)')
     readings, raw = measure.read_measurements(photos, garment_type, title, text, key, model)
@@ -336,14 +354,65 @@ def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, mode
             analyzed_at=excluded.analyzed_at, attempts=listing_analysis.attempts+1, error=excluded.error""",
                      (item_id, now, len(photos), model, error))
         return
-    conn.execute('DELETE FROM listing_measurements WHERE item_id=?', (item_id,))
+    # Measurements you have checked yourself are kept; a new analysis only replaces the others.
+    conn.execute("DELETE FROM listing_measurements WHERE item_id=? AND verification_status != 'human_verified'", (item_id,))
     conn.executemany("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status)
-        VALUES(?,?,?,?,?,?,?,?,?,?)""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
-                                        r['source'], r['confidence'], r['note'], 'provisional' if r.get('source', '').startswith('photo ') else 'seller_unverified') for r in readings or []])
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,name) DO NOTHING""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
+                                        r['source'], r['confidence'], r['note'], _unverified_status(r.get('source', ''))) for r in readings or []])
     conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error,raw)
         VALUES(?,'ok',?,1,?,?,'',?) ON CONFLICT(item_id) DO UPDATE SET status='ok', analyzed_at=excluded.analyzed_at,
         attempts=listing_analysis.attempts+1, photo_count=excluded.photo_count, model=excluded.model, error='', raw=excluded.raw""",
                  (item_id, now, len(photos), model, (raw or '')[:20000]))
+
+
+def _unverified_status(source):
+    """Status of a reading nobody has checked: an AI estimate from a photo, or the seller's own number."""
+    return 'provisional' if source.startswith('photo') or source == 'manual' else 'seller_unverified'
+
+
+def save_checked_measurements(conn, item_id, garment_type, entries):
+    """Store the measurements you have checked yourself for one listing, in cm with widths flat.
+
+    entries: {name: (value_cm or None, checked)}. Checked readings count for the traffic light.
+    A changed value is stored as checked, an empty value removes the reading, a value for a
+    measurement the analysis missed is added as checked, and unchecking a reading makes it
+    unverified again. Returns how many measurements changed.
+    """
+    wanted = measure.MEASUREMENTS.get(garment_type, {})
+    current = {row[0]: row[1:] for row in conn.execute(
+        'SELECT name,value_cm,source,verification_status,note FROM listing_measurements WHERE item_id=?', (item_id,))}
+    changed = 0
+    for name, (value, checked) in entries.items():
+        if name not in wanted:
+            continue
+        old = current.get(name)
+        if value is None:
+            if old:
+                conn.execute('DELETE FROM listing_measurements WHERE item_id=? AND name=?', (item_id, name))
+                changed += 1
+            continue
+        value = round(float(value), 1)
+        if old is None:
+            conn.execute("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status)
+                VALUES(?,?,?,?,'cm',1,'manual','high','Lagt inn manuelt','human_verified')""", (item_id, name, value, value))
+            changed += 1
+            continue
+        old_value, source, status, note = old
+        if abs(old_value - value) >= 0.05:
+            note = '; '.join(filter(None, [note, f'rettet manuelt fra {old_value:g} cm']))
+            conn.execute("""UPDATE listing_measurements SET value_cm=?, raw_value=?, raw_unit='cm', flat=1, confidence='high',
+                note=?, verification_status='human_verified' WHERE item_id=? AND name=?""", (value, value, note[:300], item_id, name))
+        elif checked and status != 'human_verified':
+            conn.execute("""UPDATE listing_measurements SET confidence='high', verification_status='human_verified'
+                WHERE item_id=? AND name=?""", (item_id, name))
+        elif not checked and status == 'human_verified':
+            conn.execute('UPDATE listing_measurements SET verification_status=? WHERE item_id=? AND name=?',
+                         (_unverified_status(source), item_id, name))
+        else:
+            continue
+        changed += 1
+    conn.commit()
+    return changed
 
 
 def analyze_pending(conn, access_token, limit=100, workers=4):
@@ -444,9 +513,46 @@ def report(conn):
     return path
 
 
+def ebay_configured():
+    return bool(os.environ.get('EBAY_CLIENT_ID') and os.environ.get('EBAY_CLIENT_SECRET'))
+
+
+def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None, max_queries=0):
+    """Search Tradera for every wardrobe target still wanted, with the Swedish terms in tradera.json.
+
+    The same title and price filters as for eBay apply (prices compare only in the filter's
+    currency, so a GBP limit does not stop SEK listings). Returns counts like the eBay search.
+    """
+    searches = tradera.searches(wardrobe_items)
+    if max_queries:
+        searches = searches[:max_queries]
+    stats = {'returned': 0, 'rejected': 0, 'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
+    for wardrobe_item, query, category in searches:
+        options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
+        try:
+            for raw in tradera.search(query, category, limit_per_query):
+                stats['returned'] += 1
+                item = tradera.to_listing(raw)
+                if not search_prefilter.accept_item(item, options)[0]:
+                    stats['rejected'] += 1
+                    continue
+                stats[ingest(conn, item, wardrobe_item['id'])] += 1
+            conn.commit()
+        except tradera.RateLimited as exc:
+            print(f'Tradera search stopped: {exc}')
+            break
+        except (tradera.TraderaError, requests.RequestException) as exc:
+            print(f'Tradera error for {query!r}: {exc}')
+    if searches and not stats['returned']:
+        print('Tradera returned nothing. Try one term with: python tradera.py "harris tweed kavaj"')
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--report-only', action='store_true', help='No eBay search; with --analyze-images, only analyse')
+    parser.add_argument('--report-only', action='store_true', help='No search; with --analyze-images, only analyse')
+    parser.add_argument('--source', choices=('all', 'ebay', 'tradera'), default='all',
+                        help='Where to search (default: every source with keys in .env)')
     parser.add_argument('--limit-per-query', type=int, default=40)
     parser.add_argument('--max-queries', type=int, default=0, help='0 means all enabled queries')
     parser.add_argument('--review', nargs=3, metavar=('ITEM_ID', 'STATUS', 'NOTES'), help='Set status: ' + '/'.join(REVIEW_STATUSES))
@@ -467,11 +573,13 @@ def main():
             print('Report:', report(conn))
             return
         access_token = None
-        if not args.report_only:
+        filter_config = search_prefilter.load_config()
+        wardrobe = group_priority.search_order(catalog(), group_priority.load())
+        search_ebay = args.source == 'ebay' or (args.source == 'all' and ebay_configured())
+        if not args.report_only and search_ebay:
             access_token = token()
             stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
-            filter_config = search_prefilter.load_config()
-            searches = [(x, q) for x in group_priority.search_order(catalog(), group_priority.load()) for q in x['search_terms']]
+            searches = [(x, q) for x in wardrobe for q in x['search_terms']]
             if args.max_queries:
                 searches = searches[:args.max_queries]
             prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
@@ -498,12 +606,21 @@ def main():
                     print(f'API error for {query!r}: {exc}')
             print('Search prefilter:', prefilter_stats)
             print(stats)
+        elif not args.report_only and args.source == 'all':
+            print('eBay skipped: add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to .env')
+        if not args.report_only and args.source in ('all', 'tradera'):
+            if tradera.credentials():
+                print('Tradera:', search_tradera(conn, wardrobe, args.limit_per_query, filter_config, args.max_queries))
+            elif args.source == 'tradera':
+                parser.error('add TRADERA_APP_ID and TRADERA_APP_KEY to .env (free at api.tradera.com/register)')
+            else:
+                print('Tradera skipped: add TRADERA_APP_ID and TRADERA_APP_KEY to .env')
         if args.analyze_images:
-            if access_token is None:
+            if access_token is None and ebay_configured():
                 try:
                     access_token = token()
                 except (RuntimeError, requests.RequestException) as exc:
-                    print(f'No eBay access ({exc}); analysing stored photos only, without descriptions')
+                    print(f'No eBay access ({exc}); eBay listings are analysed from stored photos only, without descriptions')
             print(analyze_pending(conn, access_token, args.analyze_limit))
         print('Report:', report(conn))
 
