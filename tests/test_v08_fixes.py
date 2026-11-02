@@ -53,6 +53,18 @@ def test_every_photo_kept_with_its_largest_size():
     assert tradera.photos({'detailedImageLinks': own_names}) == ['https://img.tradera.net/a_m.jpg', 'https://img.tradera.net/b_m.jpg']
 
 
+def test_live_tradera_photo_sizes():
+    # As Tradera sent it for item 758913588: every photo as thumbs/ and minithumb/ with the same file name.
+    names = ['666614049_5d084ada.jpg', '666614049_dea93650.jpg', '666614049_c77dfae8.jpg']
+    links = [f'https://img.tradera.net/{size}/049/{name}' for name in names for size in ('thumbs', 'minithumb')]
+    assert tradera.photos({'imageLinks': links}) == [f'https://img.tradera.net/thumbs/049/{name}' for name in names]
+    # A larger size, when offered, wins for that photo only.
+    bigger = links + ['https://img.tradera.net/images/049/666614049_dea93650.jpg']
+    assert tradera.photos({'imageLinks': bigger}) == [
+        'https://img.tradera.net/thumbs/049/666614049_5d084ada.jpg', 'https://img.tradera.net/images/049/666614049_dea93650.jpg',
+        'https://img.tradera.net/thumbs/049/666614049_c77dfae8.jpg']
+
+
 def test_lookalike_websites_are_not_recognised():
     assert watcher.ebay_item_key('https://www.ebay.com/itm/317521940472?var=&mkevt=1') == 'v1|317521940472|0'
     assert watcher.ebay_item_key('https://www.ebay.com/itm/Some-Title-Words/123456789012') == 'v1|123456789012|0'

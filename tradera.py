@@ -102,14 +102,25 @@ def _is_auction(item):
 
 
 def _format_rank(name):
+    """How large an image size name is: higher is larger, 0 when the name doesn't say."""
     name = (name or '').lower()
     if any(word in name for word in ('large', 'original', 'big', 'xl', 'full')):
-        return 3
+        return 4
     if any(word in name for word in ('medium', 'normal', 'standard', 'gallery')):
-        return 2
-    if any(word in name for word in ('small', 'thumb', 'mini')):
+        return 3
+    if any(word in name for word in ('mini', 'tiny', 'small')):  # before 'thumb': minithumb is the smallest
         return 1
+    if 'thumb' in name:
+        return 2
     return 0
+
+
+def _size_rank(url, fmt=''):
+    """How large an image link is, from its format name or else the size folder in its address
+    (img.tradera.net/thumbs/049/..., /minithumb/049/...)."""
+    parts = [part for part in urlparse(url).path.split('/') if part]
+    folder = parts[0].lower() if len(parts) > 1 else ''
+    return max(_format_rank(fmt), 4 if folder == 'images' else _format_rank(folder))
 
 
 def _https(url):
@@ -134,26 +145,25 @@ def _photo_name(url):
 
 
 def _largest_per_photo(links):
-    """One link per photo, the largest size offered for it, in listing order. [] if sizes aren't named.
+    """One link per photo, the largest size offered for it, in listing order. [] if that can't be told.
 
-    Tradera gives each photo in several sizes. When the sizes of one photo share a file name, each
-    photo gets its own largest size. Otherwise the largest size that every photo has is used, so a
-    photo offered only in a smaller size is never dropped.
+    Tradera gives each photo in several sizes that share a file name (thumbs/049/123_abc.jpg and
+    minithumb/049/123_abc.jpg), so each photo keeps its own largest size. When every link has its own
+    name, the largest named size that every photo has is used, so no photo is dropped.
     """
-    sized = [(url, _format_rank(fmt)) for url, fmt in links if _format_rank(fmt)]
-    if not sized:
-        return []
-    by_size = {}
-    for url, rank in sized:
-        by_size.setdefault(rank, [])
-        if url not in by_size[rank]:
-            by_size[rank].append(url)
-    most = max(len(urls) for urls in by_size.values())  # the number of photos
+    links = list(dict.fromkeys(links))
     groups = {}
-    for url, rank in sized:
-        groups.setdefault(_photo_name(url), []).append((rank, url))
-    if len(groups) == most:
+    for url, fmt in links:
+        groups.setdefault(_photo_name(url), []).append((_size_rank(url, fmt), url))
+    if len(groups) < len(links):
         return [max(group, key=lambda pair: pair[0])[1] for group in groups.values()]
+    by_size = {}
+    for url, fmt in links:
+        if _size_rank(url, fmt):
+            by_size.setdefault(_size_rank(url, fmt), []).append(url)
+    if not by_size:
+        return []
+    most = max(len(urls) for urls in by_size.values())
     return by_size[max(rank for rank, urls in by_size.items() if len(urls) == most)]
 
 
@@ -341,6 +351,13 @@ def _demo(args):
         listing = to_listing(item)
         print(json.dumps(listing, ensure_ascii=False, indent=2))
         print(f'\n{len(photos(item))} photo(s). Text sent to DeepSeek:\n{listing_text(item) or "(none)"}')
+        print('\nImage fields from Tradera (first 6 of each):')
+        for name, wrapper in (('imageLinks', 'ImageLink'), ('detailedImageLinks', 'ImageLink')):
+            print(f'  {name}:', json.dumps(_list(_get(item, name), wrapper)[:6], ensure_ascii=False))
+        print('  numberOfImages:', _get(item, 'numberOfImages'))
+        print('Shipping options from Tradera:', json.dumps(_get(item, 'shippingOptions'), ensure_ascii=False)[:800])
+        print('Shipping condition:', _get(item, 'shippingCondition'), '| accepts pickup:', _get(item, 'acceptsPickup'))
+        print('Cheapest shipping within Sweden:', cheapest_shipping(item), 'SEK')
         print('\nFields in Tradera\'s reply:', ', '.join(sorted(item)))
         return
     category = int(args[1]) if len(args) > 1 else 302074  # Herrkläder
