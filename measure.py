@@ -1,4 +1,4 @@
-"""Reads garment measurements from eBay listing photos and text with DeepSeek's vision model.
+"""Reads garment measurements from eBay and Tradera listing photos and text with DeepSeek's vision model.
 
 The model only extracts what the listing shows. Converting to cm and comparing with your
 own measurements happens locally, so your measurements are never sent anywhere.
@@ -149,7 +149,8 @@ def build_prompt(garment_type, title, text, strict=False):
     """(text before the photos, text after the photos) for one listing."""
     wanted = MEASUREMENTS[garment_type]
     intro = (
-        'You read garment measurements from an eBay listing. A buyer compares them with the measurements '
+        'You read garment measurements from a second-hand listing (eBay or the Swedish site Tradera). '
+        'A buyer compares them with the measurements '
         'of clothes that fit him, so every number must say exactly what was measured.\n\n'
         f'Garment type: {garment_type}\nListing title: {title}\n\n'
         + (text + '\n\n' if text else '')
@@ -175,7 +176,13 @@ def build_prompt(garment_type, title, text, strict=False):
         'Other rules:\n'
         '- "flat" is true when the measurement goes one layer across a garment lying flat (most tape photos, '
         '"pit to pit", "flat waist"); false when it goes all the way round (for example "waist 34 inches" or "chest 42").\n'
-        '- Label sizes such as "42R", "W34 L30" or "Large" are not measurements; leave them out.\n'
+        '- Label sizes such as "42R", "W34 L30", "Large" or "strl 50" are not measurements; leave them out.\n'
+        '- Swedish listings: axelbredd = shoulders, ärmlängd/armlängd = sleeve, bröstvidd/bröstbredd or "armhåla till armhåla" = '
+        'pit_to_pit, midja/midjevidd = waist, stuss/sätesvidd = seat, grenhöjd/gren fram = front_rise, '
+        'gren bak = back_rise, innerbenslängd = inseam, lårvidd = thigh, benvidd/benöppning = leg_opening, '
+        'längd/rygglängd/längd bak = length or back_length, krage/halsvidd = collar. "Liggande", "platt", "platt mätta" or "x2" means '
+        'measured flat; on men\'s clothes a bröstvidd above about 80 cm or a midja above about 70 cm is almost '
+        'certainly all the way round.\n'
         '- When the text and a photo disagree, report the photo reading and mention the text value in the note.\n'
         '- Leave out any measurement the listing does not show. Never estimate one.\n\n'
         'Reply with JSON only, in this form:\n'

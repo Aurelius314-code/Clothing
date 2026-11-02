@@ -2,24 +2,37 @@
 import hashlib
 import json
 import os
+import sqlite3
 import re
 import tempfile
+from pathlib import Path
 from collections import Counter
 from urllib.parse import urlparse
 
+import pandas as pd
 import requests
 import streamlit as st
 
 import fit
 import measure
-from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
-                     has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now)
+import search_prefilter
+import group_priority
+import listing_inspector
+import marketplaces
+import plan_view
+import db_backup
+import watcher
+import tradera
+from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, fingerprint, garment_types, has_flag,
+                     listing_key, listing_photos, resolve_ebay_url, save_checked_measurements, set_flag,
+                     store_photos, utc_now, token, _ebay_headers, ingest)
 
 st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layout='wide')
 
 PAGE_SIZE = 50
 STATUS_LABELS = {'saved': '⭐ Lagret', 'rejected': 'Avvist', 'purchased': 'Kjøpt', 'unreviewed': 'Ikke vurdert'}
 FIT_LABELS = {'good': 'God', 'needs_review': 'Må vurderes', 'poor': 'Problem / bør erstattes'}
+DELIVERY_FILTERS = {'all': 'Alle', 'NO': 'Sendes til Norge', 'SE': 'Til Sverige-adressen'}
 CONFIDENCE_LABELS = {'high': 'sikker', 'medium': 'litt usikker', 'low': '⚠️ usikker'}
 
 # Prefilled once per database. The two trousers have no wardrobe target yet: none of the
@@ -67,10 +80,17 @@ def md(text):
     return re.sub(r'([\\`*_{}\[\]()#+!|<>~])', r'\\\1', str(text or ''))
 
 
+def item_key_for(url):
+    """Database key for a listing link: the eBay or Tradera item number, else a stable code made from the link."""
+    url = url.strip()
+    return (listing_key(url) or (marketplaces.listing_key(url) if marketplaces.identify(url) else None)
+            or 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24])
+
+
 def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
     """Save a listing entered by hand. `url` should already be resolved if it was a share link."""
     url = url.strip()
-    key = ebay_item_key(url) or 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]
+    key = item_key_for(url)
     old = conn.execute('SELECT price,currency,seller,image_url FROM listings WHERE item_id=?', (key,)).fetchone()
     # Blank optional fields keep what is already stored, e.g. the seller from an earlier API search.
     seller = seller.strip() or (old[2] if old else '')
@@ -104,7 +124,42 @@ def money(value, currency):
     return f'{value:.2f} {currency}' if value is not None else '?'
 
 
+def price_text(price, currency, options, current_bid=None, bid_count=None):
+    """The price line: a buy-now price, an auction's bid (opening bid when nobody has bid yet), or both."""
+    options = set((options or '').split(','))
+    if 'AUCTION' not in options:
+        return money(price, currency)
+    buy_now = 'FIXED_PRICE' in options and price is not None and current_bid is not None and price != current_bid
+    bid = current_bid if current_bid is not None else (None if 'FIXED_PRICE' in options else price)
+    if bid is None:
+        return f'{money(price, currency)} kjøp nå (også auksjon)'
+    if bid_count == 0:
+        bid_text = f'startbud {money(bid, currency)}, ingen bud ennå'
+    elif bid_count:
+        bid_text = f'gjeldende bud {money(bid, currency)} ({bid_count} bud)'
+    else:
+        bid_text = f'gjeldende bud {money(bid, currency)}'
+    return f'{money(price, currency)} kjøp nå · auksjon: {bid_text}' if buy_now else f'Auksjon: {bid_text}'
+
+# Restore before opening the database on the next Streamlit rerun.
+if st.session_state.get('pending_db_restore'):
+    selected = st.session_state.pop('pending_db_restore')
+    try:
+        db_backup.restore_backup(DB, selected)
+        st.session_state['db_restore_notice'] = (True, f'Databasen er gjenopprettet fra {Path(selected).name}.')
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        hint = (' Lukk watcher.py og andre vinduer som bruker databasen, og prøv igjen.'
+                if isinstance(exc, PermissionError) else '')
+        st.session_state['db_restore_notice'] = (False, f'Gjenopprettingen mislyktes, databasen er uendret: {exc}.{hint}')
+
+notice = st.session_state.pop('db_restore_notice', None)
+if notice:
+    (st.success if notice[0] else st.error)(notice[1])
+
 with connect() as conn:
+    if watcher.backup_error:
+        st.warning(f'Den automatiske sikkerhetskopien feilet i dag: {watcher.backup_error}. Programmet virker som før, '
+                   'men ta en kopi av wardrobe.sqlite3 selv før du gjør store endringer.')
     seed_garments(conn)
     catalog = read_catalog()
     items = catalog['items']
@@ -119,8 +174,8 @@ with connect() as conn:
 
     types = garment_types(conn, items)
     verdicts = fit.all_verdicts(conn, types)
-    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit = st.tabs(
-        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk'])
+    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups, tab_inspect, tab_europe = st.tabs(
+        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet', '🔗 Inspiser eBay', '🌍 Europeiske markeder'])
 
     with tab_home:
         st.title('Vintage Wardrobe Watcher')
@@ -145,23 +200,35 @@ with connect() as conn:
 
     with tab_wardrobe:
         st.header('Garderobeplan')
-        st.caption('Antall og søkestatus lagres i wardrobe.json. Eksisterende data beholdes.')
-        categories = sorted({i['category'] for i in items})
-        cat = st.selectbox('Kategori', ['Alle'] + categories)
-        for i in items:
-            if cat != 'Alle' and i['category'] != cat:
-                continue
-            with st.expander(f"{i['name']}  ·  {i['owned_quantity']}/{i['target_quantity']}"):
-                st.caption(i.get('notes', ''))
-                c1, c2, c3, c4 = st.columns(4)
-                q = c1.number_input('Antall eid', 0, 100, int(i['owned_quantity']), key='qty' + i['id'])
-                target = c2.number_input('Ønsket antall', 0, 100, int(i['target_quantity']), key='target' + i['id'])
-                priority = c3.number_input('Prioritet (1=høy)', 1, 10, int(i['priority']), key='prio' + i['id'])
-                enabled = c4.checkbox('Aktivt søk', value=bool(i['enabled']), key='enable' + i['id'])
-                if st.button('Lagre endringer', key='save' + i['id']):
-                    i.update(owned_quantity=q, target_quantity=target, priority=priority, enabled=enabled)
+        st.caption('Planen er delt i hovedkategorier, i rekkefølgen fra 🏷️ Gruppeprioritet. Åpne en kategori for å se '
+                   'plaggene, og endre antall, prioritet og søk rett i tabellen. Endringene lagres i wardrobe.json.')
+        plan_saved = st.session_state.pop('plan_saved', None)
+        if plan_saved:
+            st.success('Lagret: ' + ', '.join(plan_saved))
+        for category, group in plan_view.grouped(items, group_priority.load()):
+            with st.expander(plan_view.summary(category, group)):
+                editor_key = f'plan_{category}'
+                original = plan_view.rows(group)
+                edited = st.data_editor(
+                    pd.DataFrame(original), key=editor_key, hide_index=True, width='stretch', num_rows='fixed',
+                    disabled=['ID', 'Plagg', 'Notater'],
+                    column_order=['Plagg', 'Eid', 'Ønsket', 'Prioritet', 'Aktivt søk', 'Notater'],
+                    column_config={
+                        'Plagg': st.column_config.TextColumn('Plagg', width='medium'),
+                        'Eid': st.column_config.NumberColumn('Eid', min_value=0, max_value=100, step=1),
+                        'Ønsket': st.column_config.NumberColumn('Ønsket', min_value=0, max_value=100, step=1),
+                        'Prioritet': st.column_config.NumberColumn('Prioritet', help='1 er høyest', min_value=1, max_value=10, step=1),
+                        'Aktivt søk': st.column_config.CheckboxColumn('Aktivt søk', help='Søkes etter når du eier færre enn ønsket'),
+                        'Notater': st.column_config.TextColumn('Notater', width='large'),
+                    })
+                edited_rows = edited.astype(object).where(edited.notna(), None).to_dict('records')
+                pending = sum(row != before for row, before in zip(edited_rows, original))
+                if pending and st.button(f'Lagre {pending} endring{"er" if pending > 1 else ""}', key=f'save_{category}', type='primary'):
+                    changed = plan_view.apply_edits(items, edited_rows)
                     write_catalog(catalog)
-                    st.success('Lagret.'); st.rerun()
+                    st.session_state.pop(editor_key, None)
+                    st.session_state['plan_saved'] = changed
+                    st.rerun()
         st.divider()
         st.subheader('Mine faktiske plagg')
         with st.form('add_garment'):
@@ -230,14 +297,23 @@ with connect() as conn:
 
     with tab_listings:
         st.header('Annonsearkiv')
-        st.caption('Gamle annonser beholdes, også når de ikke lenger er aktive på eBay.')
-        top_left, top_mid, top_right = st.columns([1, 2, 1])
+        st.caption('Gamle annonser beholdes, også når de ikke lenger er aktive på eBay eller Tradera.')
+        top_left, top_mid, top_right, top_delivery = st.columns([1, 2, 1, 1])
         filter_status = top_left.selectbox('Vurdering', ['Alle', *REVIEW_STATUSES], format_func=lambda s: STATUS_LABELS.get(s, s))
         colours = top_mid.multiselect('Trafikklys', list(fit.COLOURS), default=[fit.GREEN, fit.YELLOW, fit.GREY],
                                       format_func=fit.LABELS.get, key='listing_colours')
         order = top_right.selectbox('Sortering', ['newest', 'best'], key='listing_order',
                                     format_func={'newest': 'Nyeste først', 'best': 'Beste treff først'}.get)
-        where, args = ('', ()) if filter_status == 'Alle' else ("WHERE COALESCE(r.status,'unreviewed')=?", (filter_status,))
+        delivery_filter = top_delivery.selectbox('Levering', ['all', 'NO', 'SE'], key='listing_delivery',
+                                                 format_func=DELIVERY_FILTERS.get)
+        conditions, args = [], []
+        if filter_status != 'Alle':
+            conditions.append("COALESCE(r.status,'unreviewed')=?"); args.append(filter_status)
+        if delivery_filter == 'SE':
+            conditions.append("l.delivery_country='SE'")
+        elif delivery_filter == 'NO':
+            conditions.append("COALESCE(l.delivery_country,'') != 'SE'")
+        where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
         candidates = [i for (i,) in conn.execute(
             f'SELECT l.item_id FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where} ORDER BY l.first_seen DESC', args)]
         unknown = fit.Verdict(fit.GREY, [], {})
@@ -250,7 +326,7 @@ with connect() as conn:
         # One remembered page per filter. The widget's label and limits never change, so Streamlit keeps
         # the page when the count changes (for example after rejecting a listing); it only moves back
         # when the page no longer exists.
-        page_key = f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}'
+        page_key = f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}_{delivery_filter}'
         if st.session_state.get(page_key, 1) > pages:
             st.session_state[page_key] = pages
         page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages) if pages > 1 else 1
@@ -262,7 +338,8 @@ with connect() as conn:
             by_id = {row[0]: row for row in conn.execute(f'''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
               l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
               COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
-              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint)
+              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint),l.current_bid,l.bid_count,
+              l.delivery_country,l.shipping_checked_at
               FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
               WHERE l.item_id IN ({','.join('?' * len(page_ids))})''', page_ids)}
             rows = [by_id[i] for i in page_ids]
@@ -280,7 +357,7 @@ with connect() as conn:
                     f'SELECT item_id,url FROM listing_photos WHERE item_id IN ({marks}) ORDER BY item_id,position', ids):
                 photos.setdefault(item_id, []).append(photo_url)
         for (iid, title, url, img, seller, price, currency, ship, ship_currency, options,
-             first, last, status, notes, similar) in rows:
+             first, last, status, notes, similar, current_bid, bid_count, delivery, shipping_checked) in rows:
             with st.container(border=True):
                 left, right = st.columns([1, 4])
                 with left:
@@ -290,12 +367,22 @@ with connect() as conn:
                     verdict = verdicts.get(iid, unknown)
                     reasons = '; '.join(verdict.reasons)
                     st.markdown(f'{fit.LABELS[verdict.colour]}' + (f' – {reasons}' if reasons else ''))
-                    price_text = money(price, currency) + (' (gjeldende bud, auksjon)' if is_auction_only(options) else '')
+                    shown_price = price_text(price, currency, options, current_bid, bid_count)
+                    to_sweden = delivery == 'SE'
                     if ship is not None:
-                        price_text += f' + frakt {money(ship, ship_currency)}'
-                    st.write(f'{price_text} · {seller or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
+                        shown_price += f" + frakt{' i Sverige' if to_sweden else ''} {money(ship, ship_currency)}"
+                    elif to_sweden and shipping_checked:
+                        shown_price += ' + frakt: ikke oppgitt (kanskje bare henting)'
+                    elif to_sweden:
+                        shown_price += ' + frakt i Sverige (se annonsen)'
+                    elif iid.startswith(tradera.KEY_PREFIX):
+                        shown_price += ' + frakt til Norge (se annonsen)'
+                    if to_sweden:
+                        shown_price = '📦 **Til Sverige-adressen** · ' + shown_price
+                    st.markdown(f'{shown_price} · {md(seller) or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
-                    st.caption(f'Først sett: {first} · Sist sett: {last}')
+                    source_name = 'Tradera' if iid.startswith(tradera.KEY_PREFIX) else 'eBay' if iid.startswith('v1|') else 'Lagt inn manuelt'
+                    st.caption(f'{source_name} · Først sett: {first} · Sist sett: {last}')
                     if similar > 1: st.warning(f'{similar} annonser med samme selger og normalisert tittel – mulig relisting, ikke bekreftet.')
                     found = sorted(readings.get(iid, []), key=lambda r: measure.ORDER.index(r[0]))
                     analysis = analyses.get(iid)
@@ -305,7 +392,7 @@ with connect() as conn:
                         for name, value_cm, raw_value, raw_unit, flat, source, confidence, note, verification_status in found:
                             label = measure.LABELS.get(name, name) + (' (flatt)' if name in measure.WIDTHS else '')
                             raw = f'{raw_value:g} {raw_unit}' + (', målt rundt' if name in measure.WIDTHS and not flat else '')
-                            where_from = source.replace('photo', 'bilde').replace('text', 'teksten')
+                            where_from = source.replace('photo', 'bilde').replace('text', 'teksten').replace('manual', 'lagt inn av deg')
                             dot = fit.DOTS[verdict.per_reading[name][0]] + ' ' if name in verdict.per_reading else ''
                             status_text = {'provisional': 'AI-estimat – ikke verifisert', 'seller_unverified': 'Oppgitt av selger – ikke verifisert', 'legacy_unverified': 'Eldre måling – ikke verifisert', 'human_verified': 'Manuelt verifisert'}.get(verification_status, 'Ikke verifisert')
                             line = f'- {dot}{label}: **{value_cm:.1f} cm** ({raw}) · {where_from} · {status_text} · {CONFIDENCE_LABELS.get(confidence, confidence)}'
@@ -315,6 +402,7 @@ with connect() as conn:
                                                      else f'minst {low:g}' if low is not None else f'høyst {high:g}') + ' cm'
                             lines.append(line + (f' – {md(note)}' if note else ''))
                         st.markdown('**Mål fra annonsen (AI-mål er ikke verifiserte passformmål)**\n' + '\n'.join(lines))
+                        st.caption('Bare mål du har kontrollert gir trafikklys. Sjekk dem under «Kontroller mål».')
                     elif analysis and analysis[0] == 'ok':
                         st.caption('Mål fra annonsen: ingen mål vist i bildene eller teksten.')
                     elif analysis and analysis[0] == 'error':
@@ -323,6 +411,32 @@ with connect() as conn:
                     shown = photos.get(iid) or ([measure.full_size_photo(img)] if img and safe_url(img) else [])
                     if shown and st.toggle(f'Vis bilder ({len(shown)})', key='ph' + iid):
                         st.image(shown, width=240, caption=[f'Bilde {n}' for n in range(1, len(shown) + 1)])
+                    kind = types.get(iid)
+                    if kind in measure.MEASUREMENTS:
+                        saved = st.session_state.get('checked_saved')
+                        if saved and saved[0] == iid:
+                            st.session_state.pop('checked_saved')
+                            st.success(f'{saved[1]} mål oppdatert. Trafikklyset bruker nå de kontrollerte målene.' if saved[1] else 'Ingen endringer.')
+                        checked_count = sum(r[8] == 'human_verified' for r in found)
+                        with st.expander('✔️ Kontroller mål' + (f' ({checked_count} av {len(found)} kontrollert)' if found else '')):
+                            st.caption('Sjekk hvert mål mot bildet eller teksten i annonsen, i cm med bredder flatt. Kryss av for '
+                                       'mål som stemmer, rett tall som er feil, tøm feltet for å fjerne et feil mål, eller fyll inn '
+                                       'mål analysen ikke fant. Rettede og nye mål lagres som kontrollert.')
+                            by_name = {r[0]: r for r in found}
+                            with st.form('check' + iid):
+                                entries = {}
+                                for name in measure.MEASUREMENTS[kind]:
+                                    row = by_name.get(name)
+                                    label = measure.LABELS[name] + (' (flatt)' if name in measure.WIDTHS else '')
+                                    value_col, check_col = st.columns([3, 1], vertical_alignment='bottom')
+                                    value = value_col.number_input(label, min_value=0.0, max_value=200.0, value=float(row[1]) if row else None,
+                                                                   step=0.5, format='%.1f', key=f'cv_{iid}_{name}')
+                                    checked = check_col.checkbox('Kontrollert', value=bool(row and row[8] == 'human_verified'),
+                                                                 key=f'cc_{iid}_{name}', disabled=row is None)
+                                    entries[name] = (value, checked)
+                                if st.form_submit_button('Lagre kontroll'):
+                                    st.session_state['checked_saved'] = (iid, save_checked_measurements(conn, iid, kind, entries))
+                                    st.rerun()
                     with st.form('review' + iid):
                         choice = st.selectbox('Vurdering', REVIEW_STATUSES, index=REVIEW_STATUSES.index(status) if status in REVIEW_STATUSES else 0,
                                               format_func=STATUS_LABELS.get, key='rs' + iid)
@@ -335,8 +449,9 @@ with connect() as conn:
 
     with tab_add:
         st.header('Manuell annonseimport')
-        st.caption('Samme eBay-annonse oppdaterer den eksisterende registreringen, også om lenken har andre sporingsparametere '
-                   'eller er en delelenke fra eBay-appen (ebay.us/…, ebay.io/…). Bildene og målene hentes ved neste analyse.')
+        st.caption('Samme eBay- eller Tradera-annonse oppdaterer den eksisterende registreringen, også om lenken har andre '
+                   'sporingsparametere eller er en delelenke fra eBay-appen (ebay.us/…, ebay.io/…). Bildene og målene hentes '
+                   'ved neste analyse. Tradera-priser er i SEK.')
         with st.form('manual'):
             title = st.text_input('Annonsetittel *')
             url = st.text_input('Annonse-URL *')
@@ -374,6 +489,266 @@ with connect() as conn:
         if histories:
             st.dataframe([{'Annonse': r[1], 'Dato': r[2], 'Pris': r[3], 'Valuta': r[4]} for r in histories], hide_index=True, width='stretch')
         else: st.caption('Ingen prisobservasjoner ennå.')
-        st.subheader('Eksporter sikkerhetskopi')
+        st.subheader('Sikkerhetskopier av databasen')
+        st.caption('Automatisk SQLite-kopi ved første oppstart hver dag. Beholder 14 daglige, 8 ukentlige og 6 månedlige versjoner. Kopiene ligger i backups/ på samme disk.')
+        if st.button('Lag sikkerhetskopi nå', key='backup_now'):
+            try:
+                created = db_backup.create_backup(DB, force=True)
+                db_backup.prune_backups(DB)
+                st.success(f'Verifisert kopi opprettet: {created.name}')
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                st.error(f'Kunne ikke lage sikkerhetskopi: {exc}')
+        backups = db_backup.list_backups(DB)
+        if backups:
+            chosen = st.selectbox('Velg sikkerhetskopi', backups, format_func=lambda p: p.name, key='backup_choice')
+            st.download_button('Last ned valgt databasekopi', chosen.read_bytes(), file_name=chosen.name,
+                               mime='application/vnd.sqlite3')
+            st.warning('Gjenoppretting erstatter den aktive databasen. En sikkerhetskopi av nåværende database opprettes først.')
+            confirm = st.checkbox('Jeg forstår at nåværende database blir erstattet', key='restore_confirm')
+            if st.button('Gjenopprett valgt kopi', disabled=not confirm, key='restore_backup'):
+                st.session_state['pending_db_restore'] = str(chosen)
+                st.rerun()
+        else:
+            st.caption('Ingen sikkerhetskopier ennå.')
         st.download_button('Last ned garderobeplan (JSON)', CATALOG.read_bytes(), file_name='wardrobe_backup.json', mime='application/json')
-        st.caption(f'Databasen ligger lokalt i {DB.name}. Ta også kopi av denne filen når programmet er lukket.')
+        st.caption('Oppbevar gjerne en ekstra kopi på en annen disk eller i OneDrive. JSON-planen lagres separat fra SQLite.')
+
+    with tab_search:
+        st.header('eBay-søkefiltre')
+        st.caption('Filtrene brukes neste gang watcher.py søker på eBay. Ingen DeepSeek-kall gjøres her. '
+                   'Ukjente størrelser og manglende prisinformasjon beholdes.')
+        settings = search_prefilter.load_config()
+        kinds = [('knitwear', 'Gensere og strikk'), ('trousers', 'Bukser'),
+                 ('jacket', 'Jakker og blazere'), ('coat', 'Frakker'),
+                 ('waistcoat', 'Vester'), ('shirt', 'Skjorter')]
+        with st.form('search_filters_form'):
+            enabled = st.checkbox('Aktiver søkefiltre', value=bool(settings.get('enabled', False)))
+            st.caption('eBay bruker prisgrensen i valgt valuta, ikke NOK-konvertering. '
+                       'Frakt og importavgifter inngår ikke i prisgrensen.')
+            edited = {}
+            for kind, label in kinds:
+                current = settings.get('garment_types', {}).get(kind, {})
+                with st.expander(label, expanded=(kind == 'knitwear')):
+                    currency = st.selectbox('Valuta', ['GBP', 'USD', 'EUR', 'NOK'],
+                                            index=['GBP', 'USD', 'EUR', 'NOK'].index(
+                                                current.get('price_currency', 'GBP')
+                                                if current.get('price_currency', 'GBP') in ['GBP', 'USD', 'EUR', 'NOK']
+                                                else 'GBP'), key='filter_currency_' + kind)
+                    price_enabled = st.checkbox('Bruk maksimalpris', value=current.get('max_item_price') is not None,
+                                                key='filter_price_on_' + kind)
+                    price = st.number_input('Maksimal annonsepris', min_value=1.0,
+                                            value=float(current.get('max_item_price') or 150.0),
+                                            step=10.0, key='filter_price_' + kind)
+                    excluded = st.text_input('Utelukk titler med (kommadelt)',
+                                              value=', '.join(current.get('exclude_title_terms', [])),
+                                              key='filter_exclude_' + kind)
+                    edited[kind] = {
+                        'max_item_price': price if price_enabled else None,
+                        'price_currency': currency,
+                        'exclude_title_terms': [w.strip() for w in excluded.split(',') if w.strip()]
+                    }
+            if st.form_submit_button('Lagre søkefiltre'):
+                settings['enabled'] = enabled
+                settings['garment_types'] = {**settings.get('garment_types', {}), **edited}
+                search_prefilter.save_config(settings)
+                st.success('Søkefiltre lagret. De gjelder fra neste eBay-søk.')
+        st.caption('For å se antall annonser funnet og forkastet, kjør watcher.py i terminalen. '
+                   'Søkestatistikk lagres foreløpig ikke mellom kjøringer.')
+
+    with tab_groups:
+        st.header('Prioriter plagggrupper')
+        st.caption('1 er høyeste prioritet. Søk kjører grupper i prioritert rekkefølge.')
+        priorities = group_priority.load()
+        categories = sorted({item['category'] for item in items},
+                            key=lambda name: (priorities.get(name, 5), name))
+        with st.form('group_priority_form'):
+            selected = {}
+            for category in categories:
+                remaining = sum(bool(item['enabled'] and item['owned_quantity'] < item['target_quantity'])
+                                for item in items if item['category'] == category)
+                left, right = st.columns([3, 1])
+                left.write(f'{category} · {remaining} gjenstående')
+                selected[category] = right.selectbox('Prioritet: ' + category, list(range(1, 11)),
+                    index=max(1, min(10, priorities.get(category, 5))) - 1,
+                    key='priority_' + category)
+            if st.form_submit_button('Lagre gruppeprioriteter'):
+                group_priority.save(selected)
+                st.success('Lagret. Gjelder neste eBay-søk.')
+        st.caption('Enkeltplaggenes prioritet avgjør rekkefølgen innen gruppen.')
+
+    with tab_inspect:
+        st.header('Inspiser én eBay-annonse')
+        st.caption('Bruker eBays offisielle Browse API. Ingen DeepSeek-kostnad ved oppslag.')
+        inspect_url = st.text_input('eBay-lenke eller varenummer', key='inspect_url',
+                                    placeholder='https://www.ebay.com/itm/800191207354')
+        if st.button('Hent annonse fra eBay', key='inspect_fetch'):
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(CATALOG.parent / '.env')
+                number, result = listing_inspector.inspect(
+                    inspect_url, token(), _ebay_headers, resolve_short=resolve_ebay_url)
+                st.session_state['inspected_ebay'] = result
+                st.session_state['inspected_ebay_number'] = number
+            except (ValueError, RuntimeError, requests.RequestException) as exc:
+                st.session_state.pop('inspected_ebay', None)
+                st.error(f'Kunne ikke hente annonsen: {exc}. Avsluttede annonser kan være utilgjengelige i API-et.')
+        if 'inspected_ebay' in st.session_state:
+            listing = st.session_state['inspected_ebay']
+            details = listing_inspector.summary(listing)
+            st.subheader(details['title'] or 'Ukjent annonsetittel')
+            st.caption(f"eBay-varenummer: {st.session_state['inspected_ebay_number']}")
+            if details['url']:
+                st.link_button('Åpne på eBay', details['url'])
+            st.write('Tilstand:', details['condition'] or 'Ikke oppgitt')
+            price_info = details['price']
+            st.write('Pris:', f"{price_info.get('value', '?')} {price_info.get('currency', '')}")
+            photos = measure.photos_from_item(listing)
+            if photos:
+                st.image(photos[:12], width=180)
+            st.subheader('Selgeropplysninger')
+            for aspect in details['aspects']:
+                st.write(f"{aspect.get('name', '')}: {', '.join(str(v) for v in aspect.get('value', []))}")
+            if details['description']:
+                st.text_area('Beskrivelse fra eBay (råtekst/HTML)', details['description'],
+                             height=220, disabled=True)
+            else:
+                st.warning('eBay returnerte ingen beskrivelse. Mål kan fortsatt stå på bildene.')
+            st.info('Passform: Ikke verifisert. Selgeropplysninger og bilder må kontrolleres '
+                    'mot faktiske plaggmål før grønt/rødt signal kan gis.')
+            target = st.selectbox('Tilknytt garderobemål', list(names),
+                                  format_func=lambda wid: names[wid], key='inspect_target')
+            st.subheader('DeepSeek-måleanalyse')
+            st.caption('Analyserer bare denne annonsen. Sender selgertekst og tilgjengelige bilder '
+                       'til DeepSeek; dette kan medføre API-kostnader.')
+            if st.button('Analyser denne annonsen med DeepSeek', key='inspect_deepseek'):
+                from dotenv import load_dotenv
+                from watcher import save_analysis
+                load_dotenv(CATALOG.parent / '.env')
+                api_key = measure.api_key()
+                if not api_key:
+                    st.error('DEEPSEEK_API_KEY mangler i .env.')
+                else:
+                    item = dict(listing)
+                    item.setdefault('itemId', f"v1|{st.session_state['inspected_ebay_number']}|0")
+                    if not item.get('itemWebUrl'):
+                        item['itemWebUrl'] = 'https://www.ebay.com/itm/' + st.session_state['inspected_ebay_number']
+                    item_id = item['itemId']
+                    ingest(conn, item, target)
+                    conn.commit()
+                    kind = measure.garment_type_for(next(x for x in catalog['items'] if x['id'] == target))
+                    if kind not in measure.MEASUREMENTS:
+                        st.warning('Denne plagggruppen har ingen støttet måleprofil. Velg riktig garderobemål.')
+                    else:
+                        model = measure.model_name()
+                        source_photos = measure.photos_from_item(item)
+                        source_text = measure.listing_text(item)
+                        with st.spinner(f'Analyserer {len(source_photos)} bilder med {model} ...'):
+                            try:
+                                readings, raw = measure.read_measurements(
+                                    source_photos, kind, item.get('title', ''), source_text, api_key, model)
+                                save_analysis(conn, item_id, source_photos, readings, raw, model=model)
+                                conn.commit()
+                                st.session_state['inspect_last_analysis'] = item_id
+                                st.success(f'Analyse ferdig: {len(readings)} mål funnet. Resultatet er lagret.')
+                            except (measure.AnalysisError, measure.AuthError, requests.RequestException) as exc:
+                                save_analysis(conn, item_id, source_photos, error=str(exc), model=model)
+                                conn.commit()
+                                st.error(f'Analysen mislyktes: {exc}')
+            current_id = listing.get('itemId') or f"v1|{st.session_state['inspected_ebay_number']}|0"
+            if st.session_state.get('inspect_last_analysis') == current_id:
+                rows = conn.execute(
+                    'SELECT name,value_cm,source,confidence,verification_status,note '
+                    'FROM listing_measurements WHERE item_id=? ORDER BY name', (current_id,)).fetchall()
+                if rows:
+                    st.dataframe([{'Mål': n, 'cm': cm, 'Kilde': src, 'Sikkerhet': confidence,
+                                   'Verifisering': verification, 'Kommentar': note}
+                                  for n, cm, src, confidence, verification, note in rows],
+                                 use_container_width=True)
+                    st.warning('Målingene er ikke menneskelig verifisert. Ingen automatisk grønn/rød '
+                               'passformkonklusjon gis før verifisering.')
+                else:
+                    st.info('DeepSeek fant ingen mål som kunne trekkes ut.')
+            st.subheader('Arkiver annonse')
+            if st.button('Lagre annonse og bilder lokalt', key='inspect_save'):
+                item = dict(listing)
+                item.setdefault('itemId', f"v1|{st.session_state['inspected_ebay_number']}|0")
+                if not item.get('itemWebUrl'):
+                    item['itemWebUrl'] = 'https://www.ebay.com/itm/' + st.session_state['inspected_ebay_number']
+                ingest(conn, item, target)
+                conn.execute('CREATE TABLE IF NOT EXISTS listing_source_snapshots '
+                             '(item_id TEXT PRIMARY KEY, description TEXT, aspects_json TEXT, saved_at TEXT)')
+                conn.execute('INSERT INTO listing_source_snapshots(item_id,description,aspects_json,saved_at) '
+                             'VALUES(?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET '
+                             'description=excluded.description, aspects_json=excluded.aspects_json, '
+                             'saved_at=excluded.saved_at',
+                             (item['itemId'], details['description'],
+                              json.dumps(details['aspects'], ensure_ascii=False), utc_now()))
+                conn.commit()
+                st.success('Annonse, selgerbeskrivelse og bildelenker er arkivert i SQLite.')
+
+    with tab_europe:
+        st.header('Europeiske vintage-markedsplasser')
+        st.caption('Tradera, Sellpy, Vestiaire Collective, Grailed, Vinted og Kleinanzeigen. '
+                   'Manuell import fungerer nå; automatisk uthenting krever separat, autorisert integrasjon. '
+                   'Tradera søkes også automatisk med watcher.py, og en Tradera-annonse lagres bare én gang '
+                   'uansett hvor den kommer fra.')
+        with st.form('european_import'):
+            eu_url = st.text_input('Annonse-URL', placeholder='https://www.tradera.com/item/343837/753582030/...')
+            eu_title = st.text_input('Annonsetittel')
+            eu_description = st.text_area('Selgerbeskrivelse og oppgitte mål')
+            eu_photos = st.text_area('Direkte bilde-URL-er (én https-lenke per linje)')
+            eu_price = st.number_input('Pris', min_value=0.0, value=0.0, step=10.0)
+            eu_currency = st.selectbox('Valuta', ['SEK', 'EUR', 'GBP', 'NOK', 'DKK'])
+            eu_target = st.selectbox('Garderobemål', list(names),
+                                     format_func=lambda wid: names[wid], key='europe_target')
+            eu_analyze = st.checkbox('Analyser bilder og beskrivelse med DeepSeek etter import')
+            submitted = st.form_submit_button('Importer annonse')
+        if submitted:
+            market = marketplaces.identify(eu_url)
+            urls = [u.strip() for u in eu_photos.splitlines() if u.strip()]
+            if not market:
+                st.error('Ukjent markedsplass eller ugyldig URL.')
+            elif not eu_title.strip():
+                st.error('Oppgi annonsetittel.')
+            elif any(not u.startswith('https://') or not safe_url(u) for u in urls):
+                st.error('Bilde-URL-ene må være gyldige https-lenker.')
+            else:
+                key = item_key_for(eu_url)
+                manual_add(conn, eu_title.strip(), eu_url.strip(), '', float(eu_price),
+                           eu_currency, urls[0] if urls else '', eu_target, '')
+                if urls:
+                    store_photos(conn, key, urls[:24])
+                conn.execute('CREATE TABLE IF NOT EXISTS listing_source_snapshots '
+                             '(item_id TEXT PRIMARY KEY, description TEXT, aspects_json TEXT, saved_at TEXT)')
+                conn.execute('INSERT INTO listing_source_snapshots(item_id,description,aspects_json,saved_at) '
+                             'VALUES(?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET '
+                             'description=excluded.description,saved_at=excluded.saved_at',
+                             (key, eu_description, '{}', utc_now()))
+                conn.commit()
+                st.success(f'{market}: annonse importert og lagret med {len(urls[:24])} bildelenker.')
+                if eu_analyze:
+                    from dotenv import load_dotenv
+                    from watcher import save_analysis
+                    load_dotenv(CATALOG.parent / '.env')
+                    kind = measure.garment_type_for(next(x for x in items if x['id'] == eu_target))
+                    if kind not in measure.MEASUREMENTS:
+                        st.warning('Valgt garderobemål har ingen støttet måleprofil.')
+                    elif not measure.api_key():
+                        st.warning('DEEPSEEK_API_KEY mangler i .env; importen er likevel lagret.')
+                    else:
+                        with st.spinner('DeepSeek analyserer denne annonsen ...'):
+                            try:
+                                model = measure.model_name()
+                                readings, raw = measure.read_measurements(
+                                    urls[:24], kind, eu_title, eu_description, measure.api_key(), model)
+                                save_analysis(conn, key, urls[:24], readings, raw, model=model)
+                                conn.commit()
+                                st.success(f'Fant {len(readings)} mål. Lagret som ikke-verifiserte målinger.')
+                                if readings:
+                                    st.dataframe([{'Mål': x['name'], 'cm': x['value_cm'],
+                                                   'Kilde': x['source'], 'Sikkerhet': x['confidence']}
+                                                  for x in readings], use_container_width=True)
+                            except (measure.AnalysisError, measure.AuthError, requests.RequestException) as exc:
+                                save_analysis(conn, key, urls[:24], error=str(exc), model=measure.model_name())
+                                conn.commit()
+                                st.error(f'DeepSeek-analysen mislyktes: {exc}')

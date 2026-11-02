@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,16 +17,22 @@ import requests
 from dotenv import load_dotenv
 
 import measure
+import search_prefilter
+import group_priority
+import tradera
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
 CATALOG = ROOT / 'wardrobe.json'
 REVIEW_STATUSES = ('unreviewed', 'saved', 'rejected', 'purchased')
+backup_error = None  # why today's automatic database backup failed, if it did
 MAX_ATTEMPTS = 3  # a listing whose analysis keeps failing is given up after this many tries
 SHORT_LINK_HOSTS = {'ebay.us', 'ebay.io'}  # share links from the eBay app, without the item number
-# Matches both https://www.ebay.co.uk/itm/123456789012 and the older
-# https://www.ebay.com/itm/Some-Title-Words/123456789012 form, ignoring tracking parameters.
-EBAY_ITEM_URL = re.compile(r'ebay\.[a-z.]+/itm/(?:[^/?#]+/)?(\d{9,15})(?!\d)', re.IGNORECASE)
+# The website must be eBay itself (www.ebay.co.uk, ebay.com, ebay.com.au ...), not a lookalike such as
+# ebay.com.example.net or notebay.com. The path matches both /itm/123456789012 and the older
+# /itm/Some-Title-Words/123456789012 form; tracking parameters are ignored.
+EBAY_HOST = re.compile(r'(?:^|\.)ebay\.[a-z]{2,3}(?:\.[a-z]{2})?$', re.IGNORECASE)
+EBAY_ITEM_PATH = re.compile(r'^/itm/(?:[^/]+/)?(\d{9,15})(?:/|$)', re.IGNORECASE)
 
 
 def utc_now():
@@ -39,8 +46,21 @@ def ebay_item_key(url):
     by the API search end up as one record. (Listings with size/colour variations get a
     different suffix from the API, so those can still appear twice.)
     """
-    match = EBAY_ITEM_URL.search(url or '')
+    parsed = urlparse((url or '').strip())
+    if parsed.scheme not in ('http', 'https') or not EBAY_HOST.search(parsed.hostname or ''):
+        return None
+    match = EBAY_ITEM_PATH.match(parsed.path)
     return f'v1|{match.group(1)}|0' if match else None
+
+
+def listing_key(url):
+    """The database key for an eBay or Tradera listing URL, else None."""
+    return ebay_item_key(url) or tradera.item_key(url)
+
+
+def can_fetch_full_listing(item_id):
+    """True for listings whose full photos and description can be fetched again from an API."""
+    return item_id.startswith(('v1|', tradera.KEY_PREFIX))
 
 
 def resolve_ebay_url(url):
@@ -98,7 +118,38 @@ def _migrate_v04(conn):
     set_flag(conn, 'migrated_v0.4')
 
 
+LISTING_TABLES = ('listings', 'price_history', 'matches', 'listing_reviews', 'listing_photos',
+                  'listing_analysis', 'listing_measurements', 'listing_source_snapshots')
+
+
+def _migrate_v08(conn):
+    """Tradera listings imported in the European tab before v0.8 were keyed by a code made from the
+    link; give them their item number, as the Tradera search does. Runs once per database file."""
+    if has_flag(conn, 'migrated_v0.8'):
+        return
+    tables = [t for t in LISTING_TABLES if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()]
+    for old_key, url in conn.execute("SELECT item_id,url FROM listings WHERE item_id LIKE 'tradera:%'").fetchall():
+        suffix = old_key[len(tradera.KEY_PREFIX):]
+        new_key = tradera.item_key(url)
+        if (suffix.isdigit() and len(suffix) <= 10) or not new_key or \
+                conn.execute('SELECT 1 FROM listings WHERE item_id=?', (new_key,)).fetchone():
+            continue  # already an item number, no item number in the link, or that listing exists: leave it
+        for table in tables:
+            conn.execute(f'UPDATE {table} SET item_id=? WHERE item_id=?', (new_key, old_key))
+    set_flag(conn, 'migrated_v0.8')
+
+
 def connect():
+    global backup_error
+    from db_backup import automatic_backup
+    try:
+        automatic_backup(DB)  # snapshot before any schema migrations or writes
+        backup_error = None
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        # A failed copy must not lock you out: the app (and its restore button) still has to open.
+        backup_error = f'{type(exc).__name__}: {exc}'
+        print(f'Warning: automatic backup of {Path(DB).name} failed ({backup_error})', file=sys.stderr)
     conn = sqlite3.connect(DB)
     conn.execute('''CREATE TABLE IF NOT EXISTS listings (
         item_id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT, image_url TEXT,
@@ -108,6 +159,17 @@ def connect():
     _add_column(conn, 'listings', 'buying_options', "TEXT DEFAULT ''")
     _add_column(conn, 'listings', 'shipping_cost', 'REAL')
     _add_column(conn, 'listings', 'shipping_currency', "TEXT DEFAULT ''")
+    # Auctions: the leading bid (or the opening bid when nobody has bid) and how many bids there are.
+    # NULL when the source didn't say. For a listing with a buy-now price too, `price` is the buy-now price.
+    _add_column(conn, 'listings', 'current_bid', 'REAL')
+    _add_column(conn, 'listings', 'bid_count', 'INTEGER')
+    # Where the listing can be delivered: 'NO' (to Norway), 'SE' (to your Swedish address), NULL (not known).
+    # A listing once seen shipping to Norway stays 'NO'. shipping_checked_at: when Tradera shipping was looked up.
+    had_delivery = 'delivery_country' in {row[1] for row in conn.execute('PRAGMA table_info(listings)')}
+    _add_column(conn, 'listings', 'delivery_country', 'TEXT')
+    _add_column(conn, 'listings', 'shipping_checked_at', 'TEXT')
+    if not had_delivery:  # listings found by the eBay search before v0.8 were all searched as shipping to Norway
+        conn.execute("UPDATE listings SET delivery_country='NO' WHERE item_id LIKE 'v1|%' AND COALESCE(buying_options,'') != ''")
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
         item_id TEXT NOT NULL, observed_at TEXT NOT NULL, price REAL,
         currency TEXT, PRIMARY KEY(item_id, observed_at))''')
@@ -142,6 +204,7 @@ def connect():
         PRIMARY KEY(garment_type, name))''')
     _add_column(conn, 'listing_measurements', 'verification_status', "TEXT NOT NULL DEFAULT 'legacy_unverified'")
     _migrate_v04(conn)
+    _migrate_v08(conn)
     conn.commit()
     return conn
 
@@ -166,9 +229,20 @@ def _ship_to_country():
     return country
 
 
-def _ebay_headers(access_token):
-    return {'Authorization': f'Bearer {access_token}', 'X-EBAY-C-MARKETPLACE-ID': os.getenv('EBAY_MARKETPLACE_ID', 'EBAY_GB'),
-            'X-EBAY-C-ENDUSERCTX': f'contextualLocation=country%3D{_ship_to_country()}'}
+def swedish_pickup():
+    """SWEDISH_PICKUP in .env: you can receive parcels at an address or pickup point in Sweden."""
+    return os.environ.get('SWEDISH_PICKUP', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _sweden_marketplace():
+    """The eBay site searched for sellers who ship to Sweden (default eBay Germany, the largest in the EU)."""
+    return os.getenv('EBAY_SWEDEN_MARKETPLACE_ID', 'EBAY_DE').strip() or 'EBAY_DE'
+
+
+def _ebay_headers(access_token, country=None, marketplace=None):
+    return {'Authorization': f'Bearer {access_token}',
+            'X-EBAY-C-MARKETPLACE-ID': marketplace or os.getenv('EBAY_MARKETPLACE_ID', 'EBAY_GB'),
+            'X-EBAY-C-ENDUSERCTX': f'contextualLocation=country%3D{country or _ship_to_country()}'}
 
 
 def get_item(item_id, access_token):
@@ -179,13 +253,14 @@ def get_item(item_id, access_token):
     return r.json()
 
 
-def fetch(query, access_token, limit=100):
-    country = _ship_to_country()
-    headers = _ebay_headers(access_token)
+def fetch(query, access_token, limit=100, filters=None, country=None, marketplace=None):
+    """Search results for sellers who ship to `country` (default EBAY_SHIP_TO_COUNTRY), with shipping quoted there."""
+    country = country or _ship_to_country()
+    headers = _ebay_headers(access_token, country, marketplace)
     for offset in range(0, limit, 200):
         # deliveryCountry limits results to sellers who will ship to that country.
         params = {'q': query, 'limit': min(200, limit - offset), 'offset': offset,
-                  'filter': f'deliveryCountry:{country}'}
+                  'filter': filters or f'deliveryCountry:{country}'}
         r = requests.get('https://api.ebay.com/buy/browse/v1/item_summary/search', headers=headers, params=params, timeout=45)
         r.raise_for_status()
         items = r.json().get('itemSummaries', [])
@@ -229,27 +304,50 @@ def listing_photos(conn, item_id):
     return [url for (url,) in conn.execute('SELECT url FROM listing_photos WHERE item_id=? ORDER BY position', (item_id,))]
 
 
-def ingest(conn, item, wardrobe_id=None):
+def ingest(conn, item, wardrobe_id=None, delivery=None):
+    """Store one listing. delivery: 'NO' or 'SE' when the search says where it can be sent, None otherwise.
+
+    A listing already known to ship to Norway keeps its Norwegian price and shipping when a search for
+    Sweden finds it again; only last seen and the wardrobe match are updated.
+    """
     item_id = item.get('itemId')
     if not item_id:
         return 'skipped'
     now = utc_now()
+    if delivery == 'SE':
+        known = conn.execute('SELECT delivery_country FROM listings WHERE item_id=?', (item_id,)).fetchone()
+        if known and known[0] == 'NO':
+            conn.execute('UPDATE listings SET last_seen=? WHERE item_id=?', (now, item_id))
+            if wardrobe_id:
+                conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (item_id, wardrobe_id))
+            return 'seen'
     title = item.get('title', '')
     seller = (item.get('seller') or {}).get('username', '')
     price, currency = _money(item.get('price') or item.get('currentBidPrice'))
     shipping_cost, shipping_currency = _cheapest_shipping(item)
     buying_options = ','.join(item.get('buyingOptions') or [])
     image_url = (item.get('image') or {}).get('imageUrl', '')
+    current_bid = _money(item.get('currentBidPrice'))[0]
+    try:
+        bid_count = int(item['bidCount'])
+    except (KeyError, TypeError, ValueError):
+        bid_count = None
     old = conn.execute('SELECT price,currency FROM listings WHERE item_id=?', (item_id,)).fetchone()
     conn.execute('''INSERT INTO listings(item_id,title,url,image_url,seller,price,currency,first_seen,last_seen,
-        fingerprint,buying_options,shipping_cost,shipping_currency)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        fingerprint,buying_options,shipping_cost,shipping_currency,current_bid,bid_count,delivery_country)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
         title=excluded.title,url=excluded.url,image_url=excluded.image_url,
         seller=excluded.seller,price=excluded.price,currency=excluded.currency,
         last_seen=excluded.last_seen,fingerprint=excluded.fingerprint,buying_options=excluded.buying_options,
-        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency''',
+        -- Tradera search results carry no shipping, so keep the price looked up from the full listing.
+        shipping_cost=CASE WHEN excluded.shipping_cost IS NULL AND listings.item_id LIKE 'tradera:%'
+            THEN listings.shipping_cost ELSE excluded.shipping_cost END,
+        shipping_currency=CASE WHEN excluded.shipping_cost IS NULL AND listings.item_id LIKE 'tradera:%'
+            THEN listings.shipping_currency ELSE excluded.shipping_currency END,
+        current_bid=excluded.current_bid,bid_count=excluded.bid_count,
+        delivery_country=COALESCE(excluded.delivery_country,listings.delivery_country)''',
         (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
-         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency))
+         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, current_bid, bid_count, delivery))
     if not listing_photos(conn, item_id):
         # The full photo list replaces these when the listing is analysed, so photo numbers stay stable.
         store_photos(conn, item_id, measure.photos_from_item(item))
@@ -299,7 +397,7 @@ def pending_analysis(conn, limit):
     for item_id, title, image_url in rows:
         if item_id in types:
             photos = listing_photos(conn, item_id) or ([measure.full_size_photo(image_url)] if image_url else [])
-            if not photos and not item_id.startswith('v1|'):
+            if not photos and not can_fetch_full_listing(item_id):
                 continue  # added by hand from another site without a photo: nothing to read
             jobs.append((item_id, title, types[item_id], photos))
             if len(jobs) >= limit:
@@ -318,6 +416,13 @@ def _analyze_one(job, access_token, key, model):
             text = measure.listing_text(full)
         except requests.RequestException:
             pass  # ended or unreachable listing: fall back to the photos stored from the search
+    elif item_id.startswith(tradera.KEY_PREFIX) and tradera.credentials():
+        try:
+            full = tradera.get_item(item_id)
+            photos = tradera.photos(full) or photos
+            text = tradera.listing_text(full)
+        except (requests.RequestException, tradera.TraderaError):
+            pass  # ended or unreachable listing: fall back to the photos stored from the search
     if not photos and not text:
         raise measure.AnalysisError('no photos available (the listing may have ended)')
     readings, raw = measure.read_measurements(photos, garment_type, title, text, key, model)
@@ -334,14 +439,65 @@ def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, mode
             analyzed_at=excluded.analyzed_at, attempts=listing_analysis.attempts+1, error=excluded.error""",
                      (item_id, now, len(photos), model, error))
         return
-    conn.execute('DELETE FROM listing_measurements WHERE item_id=?', (item_id,))
+    # Measurements you have checked yourself are kept; a new analysis only replaces the others.
+    conn.execute("DELETE FROM listing_measurements WHERE item_id=? AND verification_status != 'human_verified'", (item_id,))
     conn.executemany("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status)
-        VALUES(?,?,?,?,?,?,?,?,?,?)""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
-                                        r['source'], r['confidence'], r['note'], 'provisional' if r.get('source', '').startswith('photo ') else 'seller_unverified') for r in readings or []])
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,name) DO NOTHING""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
+                                        r['source'], r['confidence'], r['note'], _unverified_status(r.get('source', ''))) for r in readings or []])
     conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error,raw)
         VALUES(?,'ok',?,1,?,?,'',?) ON CONFLICT(item_id) DO UPDATE SET status='ok', analyzed_at=excluded.analyzed_at,
         attempts=listing_analysis.attempts+1, photo_count=excluded.photo_count, model=excluded.model, error='', raw=excluded.raw""",
                  (item_id, now, len(photos), model, (raw or '')[:20000]))
+
+
+def _unverified_status(source):
+    """Status of a reading nobody has checked: an AI estimate from a photo, or the seller's own number."""
+    return 'provisional' if source.startswith('photo') or source == 'manual' else 'seller_unverified'
+
+
+def save_checked_measurements(conn, item_id, garment_type, entries):
+    """Store the measurements you have checked yourself for one listing, in cm with widths flat.
+
+    entries: {name: (value_cm or None, checked)}. Checked readings count for the traffic light.
+    A changed value is stored as checked, an empty value removes the reading, a value for a
+    measurement the analysis missed is added as checked, and unchecking a reading makes it
+    unverified again. Returns how many measurements changed.
+    """
+    wanted = measure.MEASUREMENTS.get(garment_type, {})
+    current = {row[0]: row[1:] for row in conn.execute(
+        'SELECT name,value_cm,source,verification_status,note FROM listing_measurements WHERE item_id=?', (item_id,))}
+    changed = 0
+    for name, (value, checked) in entries.items():
+        if name not in wanted:
+            continue
+        old = current.get(name)
+        if value is None:
+            if old:
+                conn.execute('DELETE FROM listing_measurements WHERE item_id=? AND name=?', (item_id, name))
+                changed += 1
+            continue
+        value = round(float(value), 1)
+        if old is None:
+            conn.execute("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status)
+                VALUES(?,?,?,?,'cm',1,'manual','high','Lagt inn manuelt','human_verified')""", (item_id, name, value, value))
+            changed += 1
+            continue
+        old_value, source, status, note = old
+        if abs(old_value - value) >= 0.05:
+            note = '; '.join(filter(None, [note, f'rettet manuelt fra {old_value:g} cm']))
+            conn.execute("""UPDATE listing_measurements SET value_cm=?, raw_value=?, raw_unit='cm', flat=1, confidence='high',
+                note=?, verification_status='human_verified' WHERE item_id=? AND name=?""", (value, value, note[:300], item_id, name))
+        elif checked and status != 'human_verified':
+            conn.execute("""UPDATE listing_measurements SET confidence='high', verification_status='human_verified'
+                WHERE item_id=? AND name=?""", (item_id, name))
+        elif not checked and status == 'human_verified':
+            conn.execute('UPDATE listing_measurements SET verification_status=? WHERE item_id=? AND name=?',
+                         (_unverified_status(source), item_id, name))
+        else:
+            continue
+        changed += 1
+    conn.commit()
+    return changed
 
 
 def analyze_pending(conn, access_token, limit=100, workers=4):
@@ -442,15 +598,119 @@ def report(conn):
     return path
 
 
+def ebay_configured():
+    return bool(os.environ.get('EBAY_CLIENT_ID') and os.environ.get('EBAY_CLIENT_SECRET'))
+
+
+def search_ebay(conn, access_token, wardrobe_items, limit_per_query=40, filter_config=None, max_queries=0,
+                country=None, marketplace=None):
+    """Search eBay for every wardrobe target still wanted, for sellers who ship to `country`.
+
+    Without a country this is the normal search (EBAY_SHIP_TO_COUNTRY, usually Norway). With 'SE' it
+    finds sellers who ship to your Swedish address; listings that also ship to Norway stay marked
+    for Norway. Returns (counts, prefilter counts).
+    """
+    country = country or _ship_to_country()
+    delivery = country if country in ('NO', 'SE') else None
+    searches = [(x, q) for x in wardrobe_items for q in x['search_terms']]
+    if max_queries:
+        searches = searches[:max_queries]
+    stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
+    prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
+    for wardrobe_item, query in searches:
+        options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
+        server_options = options if marketplace is None else {**options, 'max_item_price': None}
+        filters = search_prefilter.ebay_filters(server_options, country)  # a GBP price limit can't go to another eBay site
+        try:
+            for item in fetch(query, access_token, limit_per_query, filters=filters, country=country, marketplace=marketplace):
+                prefilter_stats['returned'] += 1
+                if not search_prefilter.accept_item(item, options)[0]:
+                    prefilter_stats['rejected'] += 1
+                    continue
+                prefilter_stats['accepted'] += 1
+                existing_id = item.get('itemId')
+                if existing_id and conn.execute(
+                        "SELECT 1 FROM listing_analysis WHERE item_id=? AND status='ok'", (existing_id,)).fetchone():
+                    prefilter_stats['already_analyzed'] += 1
+                stats[ingest(conn, item, wardrobe_item['id'], delivery)] += 1
+            conn.commit()
+        except requests.RequestException as exc:
+            print(f'API error for {query!r}: {exc}')
+    return stats, prefilter_stats
+
+
+def tradera_shipping(conn, limit=200):
+    """Look up the Swedish shipping price of Tradera listings bound for your Swedish address.
+
+    Tradera's search gives no shipping, so each new listing's full page is fetched once (at most
+    `limit` per run; the rest follow on later runs). Returns how many were looked up.
+    """
+    rows = conn.execute("""SELECT item_id FROM listings WHERE item_id LIKE 'tradera:%' AND delivery_country='SE'
+        AND shipping_checked_at IS NULL ORDER BY first_seen DESC LIMIT ?""", (limit,)).fetchall()
+    done = 0
+    for (item_id,) in rows:
+        try:
+            cost = tradera.cheapest_shipping(tradera.get_item(item_id))
+        except tradera.RateLimited as exc:
+            print(f'Tradera shipping stopped: {exc}')
+            break
+        except tradera.TraderaError:
+            cost = None  # ended or removed: nothing to look up again
+        except requests.RequestException:
+            continue  # network trouble: try again next run
+        conn.execute("UPDATE listings SET shipping_cost=?, shipping_currency=?, shipping_checked_at=? WHERE item_id=?",
+                     (cost, tradera.CURRENCY if cost is not None else '', utc_now(), item_id))
+        done += 1
+        if done % 25 == 0:
+            conn.commit()
+    conn.commit()
+    return done
+
+
+def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None, max_queries=0):
+    """Search Tradera for every wardrobe target still wanted, with the Swedish terms in tradera.json.
+
+    The same title and price filters as for eBay apply (prices compare only in the filter's
+    currency, so a GBP limit does not stop SEK listings). Returns counts like the eBay search.
+    """
+    searches = tradera.searches(wardrobe_items)
+    if max_queries:
+        searches = searches[:max_queries]
+    stats = {'returned': 0, 'rejected': 0, 'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
+    for wardrobe_item, query, category in searches:
+        options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
+        try:
+            for raw in tradera.search(query, category, limit_per_query):
+                stats['returned'] += 1
+                item = tradera.to_listing(raw)
+                if not search_prefilter.accept_item(item, options)[0]:
+                    stats['rejected'] += 1
+                    continue
+                stats[ingest(conn, item, wardrobe_item['id'], 'SE' if swedish_pickup() else None)] += 1
+            conn.commit()
+        except tradera.RateLimited as exc:
+            print(f'Tradera search stopped: {exc}')
+            break
+        except (tradera.TraderaError, requests.RequestException) as exc:
+            print(f'Tradera error for {query!r}: {exc}')
+    if searches and not stats['returned']:
+        print('Tradera returned nothing. Try one term with: python tradera.py "harris tweed kavaj"')
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--report-only', action='store_true', help='No eBay search; with --analyze-images, only analyse')
+    parser.add_argument('--report-only', action='store_true', help='No search; with --analyze-images, only analyse')
+    parser.add_argument('--source', choices=('all', 'ebay', 'tradera'), default='all',
+                        help='Where to search (default: every source with keys in .env)')
     parser.add_argument('--limit-per-query', type=int, default=40)
     parser.add_argument('--max-queries', type=int, default=0, help='0 means all enabled queries')
     parser.add_argument('--review', nargs=3, metavar=('ITEM_ID', 'STATUS', 'NOTES'), help='Set status: ' + '/'.join(REVIEW_STATUSES))
     parser.add_argument('--analyze-images', action='store_true',
                         help='Read measurements from listing photos with DeepSeek (each listing is analysed once)')
     parser.add_argument('--analyze-limit', type=int, default=100, help='Most listings to analyse in one run (default 100)')
+    parser.add_argument('--tradera-shipping-limit', type=int, default=200,
+                        help='With SWEDISH_PICKUP: most Tradera listings to look up shipping for in one run (default 200)')
     args = parser.parse_args()
     load_dotenv(ROOT / '.env')
     with connect() as conn:
@@ -465,26 +725,35 @@ def main():
             print('Report:', report(conn))
             return
         access_token = None
-        if not args.report_only:
+        filter_config = search_prefilter.load_config()
+        wardrobe = group_priority.search_order(catalog(), group_priority.load())
+        search_ebay = args.source == 'ebay' or (args.source == 'all' and ebay_configured())
+        if not args.report_only and search_ebay:
             access_token = token()
-            stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
-            searches = [(x['id'], q) for x in catalog() if x['enabled'] and x['owned_quantity'] < x['target_quantity'] for q in x['search_terms']]
-            if args.max_queries:
-                searches = searches[:args.max_queries]
-            for wardrobe_id, query in searches:
-                try:
-                    for item in fetch(query, access_token, args.limit_per_query):
-                        stats[ingest(conn, item, wardrobe_id)] += 1
-                    conn.commit()
-                except requests.RequestException as exc:
-                    print(f'API error for {query!r}: {exc}')
+            stats, prefilter_stats = search_ebay(conn, access_token, wardrobe, args.limit_per_query, filter_config, args.max_queries)
+            print('Search prefilter:', prefilter_stats)
             print(stats)
+            if swedish_pickup() and _ship_to_country() != 'SE':
+                stats, prefilter_stats = search_ebay(conn, access_token, wardrobe, args.limit_per_query, filter_config,
+                                                     args.max_queries, country='SE', marketplace=_sweden_marketplace())
+                print(f'eBay for your Swedish address ({_sweden_marketplace()}):', prefilter_stats, stats)
+        elif not args.report_only and args.source == 'all':
+            print('eBay skipped: add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to .env')
+        if not args.report_only and args.source in ('all', 'tradera'):
+            if tradera.credentials():
+                print('Tradera:', search_tradera(conn, wardrobe, args.limit_per_query, filter_config, args.max_queries))
+                if swedish_pickup():
+                    print('Tradera shipping looked up:', tradera_shipping(conn, args.tradera_shipping_limit))
+            elif args.source == 'tradera':
+                parser.error('add TRADERA_APP_ID and TRADERA_APP_KEY to .env (free at api.tradera.com/register)')
+            else:
+                print('Tradera skipped: add TRADERA_APP_ID and TRADERA_APP_KEY to .env')
         if args.analyze_images:
-            if access_token is None:
+            if access_token is None and ebay_configured():
                 try:
                     access_token = token()
                 except (RuntimeError, requests.RequestException) as exc:
-                    print(f'No eBay access ({exc}); analysing stored photos only, without descriptions')
+                    print(f'No eBay access ({exc}); eBay listings are analysed from stored photos only, without descriptions')
             print(analyze_pending(conn, access_token, args.analyze_limit))
         print('Report:', report(conn))
 

@@ -1,0 +1,28 @@
+{
+  "enabled": false,
+  "defaults": {
+    "exclude_title_terms": []
+  },
+  "garment_types": {
+    "knitwear": {
+      "max_item_price": null,
+      "price_currency": "GBP",
+      "exclude_title_terms": []
+    },
+    "trousers": {
+      "max_item_price": null,
+      "price_currency": "GBP",
+      "exclude_title_terms": []
+    },
+    "jacket": {
+      "max_item_price": null,
+      "price_currency": "GBP",
+      "exclude_title_terms": []
+    },
+    "coat": {
+      "max_item_price": null,
+      "price_currency": "GBP",
+      "exclude_title_terms": []
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "Knitwear": 1,
+  "Trousers": 2,
+  "Tailoring": 3,
+  "Shirts": 4,
+  "Outerwear": 5,
+  "Footwear": 6,
+  "Basics": 7,
+  "Accessories": 8
+}
