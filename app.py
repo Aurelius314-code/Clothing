@@ -480,6 +480,57 @@ with connect() as conn:
                 st.warning('eBay returnerte ingen beskrivelse. Mål kan fortsatt stå på bildene.')
             st.info('Passform: Ikke verifisert. Selgeropplysninger og bilder må kontrolleres '
                     'mot faktiske plaggmål før grønt/rødt signal kan gis.')
+            st.subheader('DeepSeek-måleanalyse')
+            st.caption('Analyserer bare denne annonsen. Sender selgertekst og tilgjengelige bilder '
+                       'til DeepSeek; dette kan medføre API-kostnader.')
+            if st.button('Analyser denne annonsen med DeepSeek', key='inspect_deepseek'):
+                from dotenv import load_dotenv
+                from watcher import save_analysis
+                load_dotenv(CATALOG.parent / '.env')
+                api_key = measure.api_key()
+                if not api_key:
+                    st.error('DEEPSEEK_API_KEY mangler i .env.')
+                else:
+                    item = dict(listing)
+                    item.setdefault('itemId', f"v1|{st.session_state['inspected_ebay_number']}|0")
+                    if not item.get('itemWebUrl'):
+                        item['itemWebUrl'] = 'https://www.ebay.com/itm/' + st.session_state['inspected_ebay_number']
+                    item_id = item['itemId']
+                    ingest(conn, item, target)
+                    conn.commit()
+                    kind = measure.garment_type_for(next(x for x in catalog['items'] if x['id'] == target))
+                    if kind not in measure.MEASUREMENTS:
+                        st.warning('Denne plagggruppen har ingen støttet måleprofil. Velg riktig garderobemål.')
+                    else:
+                        model = measure.model_name()
+                        source_photos = measure.photos_from_item(item)
+                        source_text = measure.listing_text(item)
+                        with st.spinner(f'Analyserer {len(source_photos)} bilder med {model} ...'):
+                            try:
+                                readings, raw = measure.read_measurements(
+                                    source_photos, kind, item.get('title', ''), source_text, api_key, model)
+                                save_analysis(conn, item_id, source_photos, readings, raw, model=model)
+                                conn.commit()
+                                st.session_state['inspect_last_analysis'] = item_id
+                                st.success(f'Analyse ferdig: {len(readings)} mål funnet. Resultatet er lagret.')
+                            except (measure.AnalysisError, measure.AuthError, requests.RequestException) as exc:
+                                save_analysis(conn, item_id, source_photos, error=str(exc), model=model)
+                                conn.commit()
+                                st.error(f'Analysen mislyktes: {exc}')
+            current_id = listing.get('itemId') or f"v1|{st.session_state['inspected_ebay_number']}|0"
+            if st.session_state.get('inspect_last_analysis') == current_id:
+                rows = conn.execute(
+                    'SELECT name,value_cm,source,confidence,verification_status,note '
+                    'FROM listing_measurements WHERE item_id=? ORDER BY name', (current_id,)).fetchall()
+                if rows:
+                    st.dataframe([{'Mål': n, 'cm': cm, 'Kilde': src, 'Sikkerhet': confidence,
+                                   'Verifisering': verification, 'Kommentar': note}
+                                  for n, cm, src, confidence, verification, note in rows],
+                                 use_container_width=True)
+                    st.warning('Målingene er ikke menneskelig verifisert. Ingen automatisk grønn/rød '
+                               'passformkonklusjon gis før verifisering.')
+                else:
+                    st.info('DeepSeek fant ingen mål som kunne trekkes ut.')
             st.subheader('Arkiver annonse')
             target = st.selectbox('Tilknytt garderobemål', list(names),
                                   format_func=lambda wid: names[wid], key='inspect_target')
