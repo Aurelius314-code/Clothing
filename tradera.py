@@ -180,7 +180,7 @@ def to_listing(item):
         return {}
     buy_now = _number(item, 'buyItNowPrice')
     listing = {'itemId': f'{KEY_PREFIX}{int(number)}', 'title': _get(item, 'shortDescription') or '',
-               'itemWebUrl': _get(item, 'itemUrl') or _get(item, 'itemLink') or '',
+               'itemWebUrl': _https(_get(item, 'itemUrl') or _get(item, 'itemLink') or ''),  # Tradera sends http://
                'seller': {'username': _get(item, 'sellerAlias') or _get(_get(item, 'seller'), 'alias') or ''}}
     if _is_auction(item):
         raw_count = _get(item, 'bidCount') if _get(item, 'bidCount') is not None else _get(item, 'totalBids')

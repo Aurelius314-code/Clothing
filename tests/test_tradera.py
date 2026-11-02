@@ -66,6 +66,11 @@ def test_soap_style_buy_now_and_http_photos():
     listing = tradera.to_listing(SOAP_BUY_NOW)
     assert listing['title'] == 'Flanellbyxor grå' and listing['seller']['username'] == 'klader'
     assert listing['price'] == {'value': '400.0', 'currency': 'SEK'} and listing['buyingOptions'] == ['FIXED_PRICE']
+    # Tradera's live search sends item links as http://; they are stored as https://.
+    live = tradera.to_listing({'id': 755387597, 'itemType': 'PureBuyItNow', 'buyItNowPrice': 1500,
+                               'itemUrl': 'http://www.tradera.com/item/1000679/755387597/harris-tweed-kavaj'})
+    assert live['itemWebUrl'] == 'https://www.tradera.com/item/1000679/755387597/harris-tweed-kavaj'
+    assert tradera.item_key(live['itemWebUrl']) == 'tradera:755387597'
     assert listing['image']['imageUrl'] == 'https://img.tradera.net/medium/x.jpg'
 
 
