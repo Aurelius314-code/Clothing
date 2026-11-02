@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 DB = ROOT / 'wardrobe.sqlite3'
 CATALOG = ROOT / 'wardrobe.json'
 REVIEW_STATUSES = ('unreviewed', 'saved', 'rejected', 'purchased')
+backup_error = None  # why today's automatic database backup failed, if it did
 MAX_ATTEMPTS = 3  # a listing whose analysis keeps failing is given up after this many tries
 SHORT_LINK_HOSTS = {'ebay.us', 'ebay.io'}  # share links from the eBay app, without the item number
 # The website must be eBay itself (www.ebay.co.uk, ebay.com, ebay.com.au ...), not a lookalike such as
@@ -139,8 +141,15 @@ def _migrate_v08(conn):
 
 
 def connect():
+    global backup_error
     from db_backup import automatic_backup
-    automatic_backup(DB)  # snapshot before any schema migrations or writes
+    try:
+        automatic_backup(DB)  # snapshot before any schema migrations or writes
+        backup_error = None
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        # A failed copy must not lock you out: the app (and its restore button) still has to open.
+        backup_error = f'{type(exc).__name__}: {exc}'
+        print(f'Warning: automatic backup of {Path(DB).name} failed ({backup_error})', file=sys.stderr)
     conn = sqlite3.connect(DB)
     conn.execute('''CREATE TABLE IF NOT EXISTS listings (
         item_id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT, image_url TEXT,

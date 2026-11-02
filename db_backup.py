@@ -36,7 +36,10 @@ def create_backup(db, directory=None, *, force=False, now=None):
     fd, temporary = tempfile.mkstemp(prefix=".snapshot-", suffix=".sqlite3", dir=directory)
     os.close(fd)
     try:
-        with sqlite3.connect(f"file:{db.resolve().as_posix()}?mode=ro", uri=True) as source:
+        # Read-only, unless a journal is left from an interrupted write: SQLite must roll it back
+        # first, which needs write access (the app would do the same when it opens the file).
+        read_only = "" if Path(str(db) + "-journal").exists() else "?mode=ro"
+        with sqlite3.connect(f"file:{db.resolve().as_posix()}{read_only}", uri=True) as source:
             with sqlite3.connect(temporary) as destination:
                 source.backup(destination)
         if not _integrity(temporary):
@@ -104,10 +107,36 @@ def restore_backup(db, snapshot):
         if not _integrity(temporary):
             raise RuntimeError("Restored database failed integrity check")
         os.replace(temporary, db)
-        for suffix in ("-wal", "-shm"):
+        for suffix in ("-wal", "-shm", "-journal"):  # an old journal would be replayed into the restored file
             sidecar = Path(str(db) + suffix)
             if sidecar.exists():
                 sidecar.unlink()
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _main(args):
+    """python db_backup.py list   |   python db_backup.py restore <backup file name>
+
+    For when the app itself can't open the database. Close the app and watcher.py first.
+    """
+    import sys
+    db = Path(__file__).with_name("wardrobe.sqlite3")
+    if args[:1] == ["list"]:
+        for path in list_backups(db):
+            print(path.name)
+        return
+    if len(args) == 2 and args[0] == "restore":
+        matches = [p for p in list_backups(db) if p.name == Path(args[1]).name]
+        if not matches:
+            sys.exit(f"No backup named {args[1]!r}. See: python db_backup.py list")
+        restore_backup(db, matches[0])
+        print(f"Restored {db.name} from {matches[0].name}. The database as it was is kept as a new backup.")
+        return
+    sys.exit(_main.__doc__)
+
+
+if __name__ == "__main__":
+    import sys
+    _main(sys.argv[1:])

@@ -91,6 +91,17 @@ The `eval` folder has a benchmark that scores DeepSeek's readings against photos
 python -m pytest -q tests eval/tests                 # offline tests, no API key needed
 ```
 
+## Backups
+
+The first time the app or `watcher.py` opens the database each day, a checked copy is saved in `backups/`. The program keeps 14 daily, 8 weekly and 6 monthly copies. Under **📏 Passform og historikk** you can make a copy now, download one, or restore one; the database as it was is saved as a copy first. The copies are on the same disk, so keep an extra one elsewhere now and then (for example in OneDrive).
+
+If a copy can't be made, the app shows a warning and works as before. If the app can't open the database at all, close it and `watcher.py`, then restore from the terminal:
+
+```powershell
+python db_backup.py list
+python db_backup.py restore wardrobe_20261102_204208_603552.sqlite3
+```
+
 ## Upgrading
 1. Close the program and **back up `wardrobe.sqlite3`**.
 2. In PyCharm, **Git → Pull**, then run `python -m pip install -r requirements.txt`.
@@ -104,7 +115,7 @@ From v0.3, the first start also fixes the wardrobe targets of the two seeded ple
 From the first DeepSeek version: its readings were lists of numbers from the tape without saying what was measured, so they are not carried over. Run `python watcher.py --report-only --analyze-images` to read those listings again.
 
 ## Features
-- Wardrobe targets and owned counts editable in the browser.
+- Wardrobe plan grouped by main category under **🧥 Garderobe** (Yttertøy, Bukser, Strikk …), in the order set under 🏷️ Gruppeprioritet. Each category opens to a table where owned and wanted counts, priority and search can be edited.
 - Wardrobe principles (`principles` in `wardrobe.json`) shown under **🏠 Oversikt**.
 - Separate physical-garment register, including fit problems and a wardrobe target you can change.
 - Manual entry for listings. eBay links, including share links from the eBay app (`ebay.us/…`, `ebay.io/…`), are recognised by item number, so the same listing updates one record and merges with the API record for it. New notes are added under earlier ones with the date.

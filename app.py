@@ -5,9 +5,11 @@ import os
 import sqlite3
 import re
 import tempfile
+from pathlib import Path
 from collections import Counter
 from urllib.parse import urlparse
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -17,7 +19,9 @@ import search_prefilter
 import group_priority
 import listing_inspector
 import marketplaces
+import plan_view
 import db_backup
+import watcher
 import tradera
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, fingerprint, garment_types, has_flag,
                      listing_key, listing_photos, resolve_ebay_url, save_checked_measurements, set_flag,
@@ -142,14 +146,20 @@ if st.session_state.get('pending_db_restore'):
     selected = st.session_state.pop('pending_db_restore')
     try:
         db_backup.restore_backup(DB, selected)
-        st.session_state['db_restore_notice'] = 'Database restored successfully.'
-    except (OSError, ValueError, RuntimeError) as exc:
-        st.session_state['db_restore_notice'] = f'Restore failed: {exc}'
+        st.session_state['db_restore_notice'] = (True, f'Databasen er gjenopprettet fra {Path(selected).name}.')
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        hint = (' Lukk watcher.py og andre vinduer som bruker databasen, og prøv igjen.'
+                if isinstance(exc, PermissionError) else '')
+        st.session_state['db_restore_notice'] = (False, f'Gjenopprettingen mislyktes, databasen er uendret: {exc}.{hint}')
 
-if st.session_state.pop('db_restore_notice', None):
-    st.info('Database restore operation completed; check your data below.')
+notice = st.session_state.pop('db_restore_notice', None)
+if notice:
+    (st.success if notice[0] else st.error)(notice[1])
 
 with connect() as conn:
+    if watcher.backup_error:
+        st.warning(f'Den automatiske sikkerhetskopien feilet i dag: {watcher.backup_error}. Programmet virker som før, '
+                   'men ta en kopi av wardrobe.sqlite3 selv før du gjør store endringer.')
     seed_garments(conn)
     catalog = read_catalog()
     items = catalog['items']
@@ -190,23 +200,35 @@ with connect() as conn:
 
     with tab_wardrobe:
         st.header('Garderobeplan')
-        st.caption('Antall og søkestatus lagres i wardrobe.json. Eksisterende data beholdes.')
-        categories = sorted({i['category'] for i in items})
-        cat = st.selectbox('Kategori', ['Alle'] + categories)
-        for i in items:
-            if cat != 'Alle' and i['category'] != cat:
-                continue
-            with st.expander(f"{i['name']}  ·  {i['owned_quantity']}/{i['target_quantity']}"):
-                st.caption(i.get('notes', ''))
-                c1, c2, c3, c4 = st.columns(4)
-                q = c1.number_input('Antall eid', 0, 100, int(i['owned_quantity']), key='qty' + i['id'])
-                target = c2.number_input('Ønsket antall', 0, 100, int(i['target_quantity']), key='target' + i['id'])
-                priority = c3.number_input('Prioritet (1=høy)', 1, 10, int(i['priority']), key='prio' + i['id'])
-                enabled = c4.checkbox('Aktivt søk', value=bool(i['enabled']), key='enable' + i['id'])
-                if st.button('Lagre endringer', key='save' + i['id']):
-                    i.update(owned_quantity=q, target_quantity=target, priority=priority, enabled=enabled)
+        st.caption('Planen er delt i hovedkategorier, i rekkefølgen fra 🏷️ Gruppeprioritet. Åpne en kategori for å se '
+                   'plaggene, og endre antall, prioritet og søk rett i tabellen. Endringene lagres i wardrobe.json.')
+        plan_saved = st.session_state.pop('plan_saved', None)
+        if plan_saved:
+            st.success('Lagret: ' + ', '.join(plan_saved))
+        for category, group in plan_view.grouped(items, group_priority.load()):
+            with st.expander(plan_view.summary(category, group)):
+                editor_key = f'plan_{category}'
+                original = plan_view.rows(group)
+                edited = st.data_editor(
+                    pd.DataFrame(original), key=editor_key, hide_index=True, width='stretch', num_rows='fixed',
+                    disabled=['ID', 'Plagg', 'Notater'],
+                    column_order=['Plagg', 'Eid', 'Ønsket', 'Prioritet', 'Aktivt søk', 'Notater'],
+                    column_config={
+                        'Plagg': st.column_config.TextColumn('Plagg', width='medium'),
+                        'Eid': st.column_config.NumberColumn('Eid', min_value=0, max_value=100, step=1),
+                        'Ønsket': st.column_config.NumberColumn('Ønsket', min_value=0, max_value=100, step=1),
+                        'Prioritet': st.column_config.NumberColumn('Prioritet', help='1 er høyest', min_value=1, max_value=10, step=1),
+                        'Aktivt søk': st.column_config.CheckboxColumn('Aktivt søk', help='Søkes etter når du eier færre enn ønsket'),
+                        'Notater': st.column_config.TextColumn('Notater', width='large'),
+                    })
+                edited_rows = edited.astype(object).where(edited.notna(), None).to_dict('records')
+                pending = sum(row != before for row, before in zip(edited_rows, original))
+                if pending and st.button(f'Lagre {pending} endring{"er" if pending > 1 else ""}', key=f'save_{category}', type='primary'):
+                    changed = plan_view.apply_edits(items, edited_rows)
                     write_catalog(catalog)
-                    st.success('Lagret.'); st.rerun()
+                    st.session_state.pop(editor_key, None)
+                    st.session_state['plan_saved'] = changed
+                    st.rerun()
         st.divider()
         st.subheader('Mine faktiske plagg')
         with st.form('add_garment'):
