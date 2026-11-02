@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import re
 import tempfile
 from collections import Counter
@@ -16,6 +17,7 @@ import search_prefilter
 import group_priority
 import listing_inspector
 import marketplaces
+import db_backup
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
                      has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now, token, _ebay_headers, ingest)
 
@@ -107,6 +109,18 @@ def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
 def money(value, currency):
     return f'{value:.2f} {currency}' if value is not None else '?'
 
+
+# Restore before opening the database on the next Streamlit rerun.
+if st.session_state.get('pending_db_restore'):
+    selected = st.session_state.pop('pending_db_restore')
+    try:
+        db_backup.restore_backup(DB, selected)
+        st.session_state['db_restore_notice'] = 'Database restored successfully.'
+    except (OSError, ValueError, RuntimeError) as exc:
+        st.session_state['db_restore_notice'] = f'Restore failed: {exc}'
+
+if st.session_state.pop('db_restore_notice', None):
+    st.info('Database restore operation completed; check your data below.')
 
 with connect() as conn:
     seed_garments(conn)
@@ -375,9 +389,29 @@ with connect() as conn:
         if histories:
             st.dataframe([{'Annonse': r[1], 'Dato': r[2], 'Pris': r[3], 'Valuta': r[4]} for r in histories], hide_index=True, width='stretch')
         else: st.caption('Ingen prisobservasjoner ennå.')
-        st.subheader('Eksporter sikkerhetskopi')
+        st.subheader('Sikkerhetskopier av databasen')
+        st.caption('Automatisk SQLite-kopi ved første oppstart hver dag. Beholder 14 daglige, 8 ukentlige og 6 månedlige versjoner. Kopiene ligger i backups/ på samme disk.')
+        if st.button('Lag sikkerhetskopi nå', key='backup_now'):
+            try:
+                created = db_backup.create_backup(DB, force=True)
+                db_backup.prune_backups(DB)
+                st.success(f'Verifisert kopi opprettet: {created.name}')
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                st.error(f'Kunne ikke lage sikkerhetskopi: {exc}')
+        backups = db_backup.list_backups(DB)
+        if backups:
+            chosen = st.selectbox('Velg sikkerhetskopi', backups, format_func=lambda p: p.name, key='backup_choice')
+            st.download_button('Last ned valgt databasekopi', chosen.read_bytes(), file_name=chosen.name,
+                               mime='application/vnd.sqlite3')
+            st.warning('Gjenoppretting erstatter den aktive databasen. En sikkerhetskopi av nåværende database opprettes først.')
+            confirm = st.checkbox('Jeg forstår at nåværende database blir erstattet', key='restore_confirm')
+            if st.button('Gjenopprett valgt kopi', disabled=not confirm, key='restore_backup'):
+                st.session_state['pending_db_restore'] = str(chosen)
+                st.rerun()
+        else:
+            st.caption('Ingen sikkerhetskopier ennå.')
         st.download_button('Last ned garderobeplan (JSON)', CATALOG.read_bytes(), file_name='wardrobe_backup.json', mime='application/json')
-        st.caption(f'Databasen ligger lokalt i {DB.name}. Ta også kopi av denne filen når programmet er lukket.')
+        st.caption('Oppbevar gjerne en ekstra kopi på en annen disk eller i OneDrive. JSON-planen lagres separat fra SQLite.')
 
     with tab_search:
         st.header('eBay-søkefiltre')
