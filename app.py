@@ -480,6 +480,8 @@ with connect() as conn:
                 st.warning('eBay returnerte ingen beskrivelse. Mål kan fortsatt stå på bildene.')
             st.info('Passform: Ikke verifisert. Selgeropplysninger og bilder må kontrolleres '
                     'mot faktiske plaggmål før grønt/rødt signal kan gis.')
+            target = st.selectbox('Tilknytt garderobemål', list(names),
+                                  format_func=lambda wid: names[wid], key='inspect_target')
             st.subheader('DeepSeek-måleanalyse')
             st.caption('Analyserer bare denne annonsen. Sender selgertekst og tilgjengelige bilder '
                        'til DeepSeek; dette kan medføre API-kostnader.')
@@ -532,8 +534,6 @@ with connect() as conn:
                 else:
                     st.info('DeepSeek fant ingen mål som kunne trekkes ut.')
             st.subheader('Arkiver annonse')
-            target = st.selectbox('Tilknytt garderobemål', list(names),
-                                  format_func=lambda wid: names[wid], key='inspect_target')
             if st.button('Lagre annonse og bilder lokalt', key='inspect_save'):
                 item = dict(listing)
                 item.setdefault('itemId', f"v1|{st.session_state['inspected_ebay_number']}|0")
