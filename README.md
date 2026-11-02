@@ -50,6 +50,16 @@ python tradera.py https://www.tradera.com/item/1640/654970712/gant-ullkavaj   # 
 
 If it prints *unexpected search reply*, the field names it lists show what Tradera sent, and the parsing in `tradera.py` needs updating to match.
 
+## A Swedish address
+
+If you can receive parcels in Sweden (a pickup point, parcel locker or parcel holding service), set `SWEDISH_PICKUP=1` in `.env`. Then:
+
+- **eBay** is searched a second time for sellers who ship to Sweden, on eBay Germany by default (`EBAY_SWEDEN_MARKETPLACE_ID`, for example `EBAY_NL` or `EBAY_FR`). That finds EU sellers who don't ship to Norway. Their prices are in that site's currency, and the shipping shown is to Sweden. A listing that also ships to Norway stays a Norway listing, with its Norwegian price and shipping.
+- **Tradera** listings count as going to your Swedish address, so sellers who only ship within Sweden are fine. The Swedish shipping price is looked up from each new listing's full page, up to 200 per run (`--tradera-shipping-limit`); the rest follow on later runs.
+- In **🔎 Annonser**, these listings are marked 📦 **Til Sverige-adressen**, and the *Levering* filter shows only them, or only listings that ship to Norway.
+
+Search words are the same English ones as for eBay UK. Brand names (Barbour, Harris Tweed, Tricker's) work on every eBay site; add German words to `search_terms` in `wardrobe.json` if you want more from eBay Germany.
+
 ## Traffic light
 
 Under **📐 Mine mål**, enter a range for each measurement you care about, per type of garment (jackets, coats, waistcoats, trousers, knitwear, shirts). Use flat measurements in cm from the measuring sheet, for example 1–2 cm either side of a garment that fits you. Leave a field empty to not judge that measurement.
@@ -101,6 +111,7 @@ From the first DeepSeek version: its readings were lists of numbers from the tap
 - Listing reviews with paging (50 per page) that stays on the same page after a review, and possible relisting warnings based on seller + normalized title.
 - eBay API search that only returns sellers who ship to `EBAY_SHIP_TO_COUNTRY`, stores the cheapest shipping quote, and keeps auction bid changes out of the price history.
 - Tradera API search with Swedish search words per wardrobe target (`tradera.json`).
+- Optional Swedish address (`SWEDISH_PICKUP=1`): an extra eBay search for sellers who ship to Sweden, Swedish shipping on Tradera, and a delivery filter.
 - Measurements read from listing photos and text by DeepSeek, shown in the app and in `report.html`.
 - Traffic light per listing against your own target ranges, based on measurements you have checked, with filtering and sorting by colour.
 - A benchmark and diagnostics for the photo reading in `eval/`.

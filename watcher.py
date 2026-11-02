@@ -152,6 +152,13 @@ def connect():
     # NULL when the source didn't say. For a listing with a buy-now price too, `price` is the buy-now price.
     _add_column(conn, 'listings', 'current_bid', 'REAL')
     _add_column(conn, 'listings', 'bid_count', 'INTEGER')
+    # Where the listing can be delivered: 'NO' (to Norway), 'SE' (to your Swedish address), NULL (not known).
+    # A listing once seen shipping to Norway stays 'NO'. shipping_checked_at: when Tradera shipping was looked up.
+    had_delivery = 'delivery_country' in {row[1] for row in conn.execute('PRAGMA table_info(listings)')}
+    _add_column(conn, 'listings', 'delivery_country', 'TEXT')
+    _add_column(conn, 'listings', 'shipping_checked_at', 'TEXT')
+    if not had_delivery:  # listings found by the eBay search before v0.8 were all searched as shipping to Norway
+        conn.execute("UPDATE listings SET delivery_country='NO' WHERE item_id LIKE 'v1|%' AND COALESCE(buying_options,'') != ''")
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
         item_id TEXT NOT NULL, observed_at TEXT NOT NULL, price REAL,
         currency TEXT, PRIMARY KEY(item_id, observed_at))''')
@@ -211,9 +218,20 @@ def _ship_to_country():
     return country
 
 
-def _ebay_headers(access_token):
-    return {'Authorization': f'Bearer {access_token}', 'X-EBAY-C-MARKETPLACE-ID': os.getenv('EBAY_MARKETPLACE_ID', 'EBAY_GB'),
-            'X-EBAY-C-ENDUSERCTX': f'contextualLocation=country%3D{_ship_to_country()}'}
+def swedish_pickup():
+    """SWEDISH_PICKUP in .env: you can receive parcels at an address or pickup point in Sweden."""
+    return os.environ.get('SWEDISH_PICKUP', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _sweden_marketplace():
+    """The eBay site searched for sellers who ship to Sweden (default eBay Germany, the largest in the EU)."""
+    return os.getenv('EBAY_SWEDEN_MARKETPLACE_ID', 'EBAY_DE').strip() or 'EBAY_DE'
+
+
+def _ebay_headers(access_token, country=None, marketplace=None):
+    return {'Authorization': f'Bearer {access_token}',
+            'X-EBAY-C-MARKETPLACE-ID': marketplace or os.getenv('EBAY_MARKETPLACE_ID', 'EBAY_GB'),
+            'X-EBAY-C-ENDUSERCTX': f'contextualLocation=country%3D{country or _ship_to_country()}'}
 
 
 def get_item(item_id, access_token):
@@ -224,9 +242,10 @@ def get_item(item_id, access_token):
     return r.json()
 
 
-def fetch(query, access_token, limit=100, filters=None):
-    country = _ship_to_country()
-    headers = _ebay_headers(access_token)
+def fetch(query, access_token, limit=100, filters=None, country=None, marketplace=None):
+    """Search results for sellers who ship to `country` (default EBAY_SHIP_TO_COUNTRY), with shipping quoted there."""
+    country = country or _ship_to_country()
+    headers = _ebay_headers(access_token, country, marketplace)
     for offset in range(0, limit, 200):
         # deliveryCountry limits results to sellers who will ship to that country.
         params = {'q': query, 'limit': min(200, limit - offset), 'offset': offset,
@@ -274,11 +293,23 @@ def listing_photos(conn, item_id):
     return [url for (url,) in conn.execute('SELECT url FROM listing_photos WHERE item_id=? ORDER BY position', (item_id,))]
 
 
-def ingest(conn, item, wardrobe_id=None):
+def ingest(conn, item, wardrobe_id=None, delivery=None):
+    """Store one listing. delivery: 'NO' or 'SE' when the search says where it can be sent, None otherwise.
+
+    A listing already known to ship to Norway keeps its Norwegian price and shipping when a search for
+    Sweden finds it again; only last seen and the wardrobe match are updated.
+    """
     item_id = item.get('itemId')
     if not item_id:
         return 'skipped'
     now = utc_now()
+    if delivery == 'SE':
+        known = conn.execute('SELECT delivery_country FROM listings WHERE item_id=?', (item_id,)).fetchone()
+        if known and known[0] == 'NO':
+            conn.execute('UPDATE listings SET last_seen=? WHERE item_id=?', (now, item_id))
+            if wardrobe_id:
+                conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (item_id, wardrobe_id))
+            return 'seen'
     title = item.get('title', '')
     seller = (item.get('seller') or {}).get('username', '')
     price, currency = _money(item.get('price') or item.get('currentBidPrice'))
@@ -292,15 +323,20 @@ def ingest(conn, item, wardrobe_id=None):
         bid_count = None
     old = conn.execute('SELECT price,currency FROM listings WHERE item_id=?', (item_id,)).fetchone()
     conn.execute('''INSERT INTO listings(item_id,title,url,image_url,seller,price,currency,first_seen,last_seen,
-        fingerprint,buying_options,shipping_cost,shipping_currency,current_bid,bid_count)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        fingerprint,buying_options,shipping_cost,shipping_currency,current_bid,bid_count,delivery_country)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
         title=excluded.title,url=excluded.url,image_url=excluded.image_url,
         seller=excluded.seller,price=excluded.price,currency=excluded.currency,
         last_seen=excluded.last_seen,fingerprint=excluded.fingerprint,buying_options=excluded.buying_options,
-        shipping_cost=excluded.shipping_cost,shipping_currency=excluded.shipping_currency,
-        current_bid=excluded.current_bid,bid_count=excluded.bid_count''',
+        -- Tradera search results carry no shipping, so keep the price looked up from the full listing.
+        shipping_cost=CASE WHEN excluded.shipping_cost IS NULL AND listings.item_id LIKE 'tradera:%'
+            THEN listings.shipping_cost ELSE excluded.shipping_cost END,
+        shipping_currency=CASE WHEN excluded.shipping_cost IS NULL AND listings.item_id LIKE 'tradera:%'
+            THEN listings.shipping_currency ELSE excluded.shipping_currency END,
+        current_bid=excluded.current_bid,bid_count=excluded.bid_count,
+        delivery_country=COALESCE(excluded.delivery_country,listings.delivery_country)''',
         (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
-         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, current_bid, bid_count))
+         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, current_bid, bid_count, delivery))
     if not listing_photos(conn, item_id):
         # The full photo list replaces these when the listing is analysed, so photo numbers stay stable.
         store_photos(conn, item_id, measure.photos_from_item(item))
@@ -555,6 +591,71 @@ def ebay_configured():
     return bool(os.environ.get('EBAY_CLIENT_ID') and os.environ.get('EBAY_CLIENT_SECRET'))
 
 
+def search_ebay(conn, access_token, wardrobe_items, limit_per_query=40, filter_config=None, max_queries=0,
+                country=None, marketplace=None):
+    """Search eBay for every wardrobe target still wanted, for sellers who ship to `country`.
+
+    Without a country this is the normal search (EBAY_SHIP_TO_COUNTRY, usually Norway). With 'SE' it
+    finds sellers who ship to your Swedish address; listings that also ship to Norway stay marked
+    for Norway. Returns (counts, prefilter counts).
+    """
+    country = country or _ship_to_country()
+    delivery = country if country in ('NO', 'SE') else None
+    searches = [(x, q) for x in wardrobe_items for q in x['search_terms']]
+    if max_queries:
+        searches = searches[:max_queries]
+    stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
+    prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
+    for wardrobe_item, query in searches:
+        options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
+        server_options = options if marketplace is None else {**options, 'max_item_price': None}
+        filters = search_prefilter.ebay_filters(server_options, country)  # a GBP price limit can't go to another eBay site
+        try:
+            for item in fetch(query, access_token, limit_per_query, filters=filters, country=country, marketplace=marketplace):
+                prefilter_stats['returned'] += 1
+                if not search_prefilter.accept_item(item, options)[0]:
+                    prefilter_stats['rejected'] += 1
+                    continue
+                prefilter_stats['accepted'] += 1
+                existing_id = item.get('itemId')
+                if existing_id and conn.execute(
+                        "SELECT 1 FROM listing_analysis WHERE item_id=? AND status='ok'", (existing_id,)).fetchone():
+                    prefilter_stats['already_analyzed'] += 1
+                stats[ingest(conn, item, wardrobe_item['id'], delivery)] += 1
+            conn.commit()
+        except requests.RequestException as exc:
+            print(f'API error for {query!r}: {exc}')
+    return stats, prefilter_stats
+
+
+def tradera_shipping(conn, limit=200):
+    """Look up the Swedish shipping price of Tradera listings bound for your Swedish address.
+
+    Tradera's search gives no shipping, so each new listing's full page is fetched once (at most
+    `limit` per run; the rest follow on later runs). Returns how many were looked up.
+    """
+    rows = conn.execute("""SELECT item_id FROM listings WHERE item_id LIKE 'tradera:%' AND delivery_country='SE'
+        AND shipping_checked_at IS NULL ORDER BY first_seen DESC LIMIT ?""", (limit,)).fetchall()
+    done = 0
+    for (item_id,) in rows:
+        try:
+            cost = tradera.cheapest_shipping(tradera.get_item(item_id))
+        except tradera.RateLimited as exc:
+            print(f'Tradera shipping stopped: {exc}')
+            break
+        except tradera.TraderaError:
+            cost = None  # ended or removed: nothing to look up again
+        except requests.RequestException:
+            continue  # network trouble: try again next run
+        conn.execute("UPDATE listings SET shipping_cost=?, shipping_currency=?, shipping_checked_at=? WHERE item_id=?",
+                     (cost, tradera.CURRENCY if cost is not None else '', utc_now(), item_id))
+        done += 1
+        if done % 25 == 0:
+            conn.commit()
+    conn.commit()
+    return done
+
+
 def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None, max_queries=0):
     """Search Tradera for every wardrobe target still wanted, with the Swedish terms in tradera.json.
 
@@ -574,7 +675,7 @@ def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None,
                 if not search_prefilter.accept_item(item, options)[0]:
                     stats['rejected'] += 1
                     continue
-                stats[ingest(conn, item, wardrobe_item['id'])] += 1
+                stats[ingest(conn, item, wardrobe_item['id'], 'SE' if swedish_pickup() else None)] += 1
             conn.commit()
         except tradera.RateLimited as exc:
             print(f'Tradera search stopped: {exc}')
@@ -597,6 +698,8 @@ def main():
     parser.add_argument('--analyze-images', action='store_true',
                         help='Read measurements from listing photos with DeepSeek (each listing is analysed once)')
     parser.add_argument('--analyze-limit', type=int, default=100, help='Most listings to analyse in one run (default 100)')
+    parser.add_argument('--tradera-shipping-limit', type=int, default=200,
+                        help='With SWEDISH_PICKUP: most Tradera listings to look up shipping for in one run (default 200)')
     args = parser.parse_args()
     load_dotenv(ROOT / '.env')
     with connect() as conn:
@@ -616,39 +719,20 @@ def main():
         search_ebay = args.source == 'ebay' or (args.source == 'all' and ebay_configured())
         if not args.report_only and search_ebay:
             access_token = token()
-            stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
-            searches = [(x, q) for x in wardrobe for q in x['search_terms']]
-            if args.max_queries:
-                searches = searches[:args.max_queries]
-            prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
-            for wardrobe_item, query in searches:
-                wardrobe_id = wardrobe_item['id']
-                kind = measure.garment_type_for(wardrobe_item)
-                options = search_prefilter.options_for(filter_config, kind)
-                filters = search_prefilter.ebay_filters(options, _ship_to_country())
-                try:
-                    for item in fetch(query, access_token, args.limit_per_query, filters=filters):
-                        prefilter_stats['returned'] += 1
-                        accepted, reason = search_prefilter.accept_item(item, options)
-                        if not accepted:
-                            prefilter_stats['rejected'] += 1
-                            continue
-                        prefilter_stats['accepted'] += 1
-                        existing_id = item.get('itemId')
-                        if existing_id and conn.execute(
-                                "SELECT 1 FROM listing_analysis WHERE item_id=? AND status='ok'", (existing_id,)).fetchone():
-                            prefilter_stats['already_analyzed'] += 1
-                        stats[ingest(conn, item, wardrobe_id)] += 1
-                    conn.commit()
-                except requests.RequestException as exc:
-                    print(f'API error for {query!r}: {exc}')
+            stats, prefilter_stats = search_ebay(conn, access_token, wardrobe, args.limit_per_query, filter_config, args.max_queries)
             print('Search prefilter:', prefilter_stats)
             print(stats)
+            if swedish_pickup() and _ship_to_country() != 'SE':
+                stats, prefilter_stats = search_ebay(conn, access_token, wardrobe, args.limit_per_query, filter_config,
+                                                     args.max_queries, country='SE', marketplace=_sweden_marketplace())
+                print(f'eBay for your Swedish address ({_sweden_marketplace()}):', prefilter_stats, stats)
         elif not args.report_only and args.source == 'all':
             print('eBay skipped: add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to .env')
         if not args.report_only and args.source in ('all', 'tradera'):
             if tradera.credentials():
                 print('Tradera:', search_tradera(conn, wardrobe, args.limit_per_query, filter_config, args.max_queries))
+                if swedish_pickup():
+                    print('Tradera shipping looked up:', tradera_shipping(conn, args.tradera_shipping_limit))
             elif args.source == 'tradera':
                 parser.error('add TRADERA_APP_ID and TRADERA_APP_KEY to .env (free at api.tradera.com/register)')
             else:

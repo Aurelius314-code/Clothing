@@ -26,6 +26,7 @@ st.set_page_config(page_title='Vintage Wardrobe Watcher', page_icon='🧥', layo
 PAGE_SIZE = 50
 STATUS_LABELS = {'saved': '⭐ Lagret', 'rejected': 'Avvist', 'purchased': 'Kjøpt', 'unreviewed': 'Ikke vurdert'}
 FIT_LABELS = {'good': 'God', 'needs_review': 'Må vurderes', 'poor': 'Problem / bør erstattes'}
+DELIVERY_FILTERS = {'all': 'Alle', 'NO': 'Sendes til Norge', 'SE': 'Til Sverige-adressen'}
 CONFIDENCE_LABELS = {'high': 'sikker', 'medium': 'litt usikker', 'low': '⚠️ usikker'}
 
 # Prefilled once per database. The two trousers have no wardrobe target yet: none of the
@@ -262,13 +263,22 @@ with connect() as conn:
     with tab_listings:
         st.header('Annonsearkiv')
         st.caption('Gamle annonser beholdes, også når de ikke lenger er aktive på eBay eller Tradera.')
-        top_left, top_mid, top_right = st.columns([1, 2, 1])
+        top_left, top_mid, top_right, top_delivery = st.columns([1, 2, 1, 1])
         filter_status = top_left.selectbox('Vurdering', ['Alle', *REVIEW_STATUSES], format_func=lambda s: STATUS_LABELS.get(s, s))
         colours = top_mid.multiselect('Trafikklys', list(fit.COLOURS), default=[fit.GREEN, fit.YELLOW, fit.GREY],
                                       format_func=fit.LABELS.get, key='listing_colours')
         order = top_right.selectbox('Sortering', ['newest', 'best'], key='listing_order',
                                     format_func={'newest': 'Nyeste først', 'best': 'Beste treff først'}.get)
-        where, args = ('', ()) if filter_status == 'Alle' else ("WHERE COALESCE(r.status,'unreviewed')=?", (filter_status,))
+        delivery_filter = top_delivery.selectbox('Levering', ['all', 'NO', 'SE'], key='listing_delivery',
+                                                 format_func=DELIVERY_FILTERS.get)
+        conditions, args = [], []
+        if filter_status != 'Alle':
+            conditions.append("COALESCE(r.status,'unreviewed')=?"); args.append(filter_status)
+        if delivery_filter == 'SE':
+            conditions.append("l.delivery_country='SE'")
+        elif delivery_filter == 'NO':
+            conditions.append("COALESCE(l.delivery_country,'') != 'SE'")
+        where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
         candidates = [i for (i,) in conn.execute(
             f'SELECT l.item_id FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where} ORDER BY l.first_seen DESC', args)]
         unknown = fit.Verdict(fit.GREY, [], {})
@@ -281,7 +291,7 @@ with connect() as conn:
         # One remembered page per filter. The widget's label and limits never change, so Streamlit keeps
         # the page when the count changes (for example after rejecting a listing); it only moves back
         # when the page no longer exists.
-        page_key = f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}'
+        page_key = f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}_{delivery_filter}'
         if st.session_state.get(page_key, 1) > pages:
             st.session_state[page_key] = pages
         page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages) if pages > 1 else 1
@@ -293,7 +303,8 @@ with connect() as conn:
             by_id = {row[0]: row for row in conn.execute(f'''SELECT l.item_id,l.title,l.url,l.image_url,l.seller,l.price,l.currency,
               l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
               COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
-              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint),l.current_bid,l.bid_count
+              (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint),l.current_bid,l.bid_count,
+              l.delivery_country,l.shipping_checked_at
               FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
               WHERE l.item_id IN ({','.join('?' * len(page_ids))})''', page_ids)}
             rows = [by_id[i] for i in page_ids]
@@ -311,7 +322,7 @@ with connect() as conn:
                     f'SELECT item_id,url FROM listing_photos WHERE item_id IN ({marks}) ORDER BY item_id,position', ids):
                 photos.setdefault(item_id, []).append(photo_url)
         for (iid, title, url, img, seller, price, currency, ship, ship_currency, options,
-             first, last, status, notes, similar, current_bid, bid_count) in rows:
+             first, last, status, notes, similar, current_bid, bid_count, delivery, shipping_checked) in rows:
             with st.container(border=True):
                 left, right = st.columns([1, 4])
                 with left:
@@ -322,11 +333,18 @@ with connect() as conn:
                     reasons = '; '.join(verdict.reasons)
                     st.markdown(f'{fit.LABELS[verdict.colour]}' + (f' – {reasons}' if reasons else ''))
                     shown_price = price_text(price, currency, options, current_bid, bid_count)
+                    to_sweden = delivery == 'SE'
                     if ship is not None:
-                        shown_price += f' + frakt {money(ship, ship_currency)}'
+                        shown_price += f" + frakt{' i Sverige' if to_sweden else ''} {money(ship, ship_currency)}"
+                    elif to_sweden and shipping_checked:
+                        shown_price += ' + frakt: ikke oppgitt (kanskje bare henting)'
+                    elif to_sweden:
+                        shown_price += ' + frakt i Sverige (se annonsen)'
                     elif iid.startswith(tradera.KEY_PREFIX):
                         shown_price += ' + frakt til Norge (se annonsen)'
-                    st.write(f'{shown_price} · {seller or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
+                    if to_sweden:
+                        shown_price = '📦 **Til Sverige-adressen** · ' + shown_price
+                    st.markdown(f'{shown_price} · {md(seller) or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
                     source_name = 'Tradera' if iid.startswith(tradera.KEY_PREFIX) else 'eBay' if iid.startswith('v1|') else 'Lagt inn manuelt'
                     st.caption(f'{source_name} · Først sett: {first} · Sist sett: {last}')

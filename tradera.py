@@ -203,9 +203,26 @@ def to_listing(item):
     if pictures:
         listing['image'] = {'imageUrl': pictures[0]}
         listing['additionalImages'] = [{'imageUrl': url} for url in pictures[1:]]
-    # Shipping is left out on purpose: the API only gives the price within Sweden, and the seller
-    # may not ship to Norway at all. Tradera shows the price for your country on the listing.
+    # Shipping is left out: search results don't include it, and the full listing only gives the price
+    # within Sweden. With SWEDISH_PICKUP, watcher.tradera_shipping() looks that price up separately.
     return listing
+
+
+def cheapest_shipping(item):
+    """The cheapest shipping within Sweden for a full Tradera listing, in SEK, or None if none is offered.
+
+    Each option's price is its cost plus the seller's packaging fee, minus any discount the seller
+    gives (free shipping is a discount of the whole cost).
+    """
+    prices = []
+    for option in _list(_get(item, 'shippingOptions'), 'ShippingOption'):
+        cost = _get(option, 'cost')
+        if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+            continue
+        surcharge = _number(option, 'sellerSurcharge') or 0
+        discount = _number(option, 'sellerDiscount') or 0
+        prices.append(max(0.0, float(cost) + surcharge - discount))
+    return min(prices) if prices else None
 
 
 def listing_text(item):
