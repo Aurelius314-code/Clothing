@@ -15,6 +15,7 @@ import measure
 import search_prefilter
 import group_priority
 import listing_inspector
+import marketplaces
 from watcher import (DB, CATALOG, MAX_ATTEMPTS, REVIEW_STATUSES, connect, ebay_item_key, fingerprint, garment_types,
                      has_flag, is_auction_only, listing_photos, resolve_ebay_url, set_flag, store_photos, utc_now, token, _ebay_headers, ingest)
 
@@ -73,7 +74,7 @@ def md(text):
 def manual_add(conn, title, url, seller, price, currency, image, wid, notes):
     """Save a listing entered by hand. `url` should already be resolved if it was a share link."""
     url = url.strip()
-    key = ebay_item_key(url) or 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]
+    key = ebay_item_key(url) or (marketplaces.listing_key(url) if marketplaces.identify(url) else 'manual:' + hashlib.sha256(url.encode('utf-8')).hexdigest()[:24])
     old = conn.execute('SELECT price,currency,seller,image_url FROM listings WHERE item_id=?', (key,)).fetchone()
     # Blank optional fields keep what is already stored, e.g. the seller from an earlier API search.
     seller = seller.strip() or (old[2] if old else '')
@@ -122,8 +123,8 @@ with connect() as conn:
 
     types = garment_types(conn, items)
     verdicts = fit.all_verdicts(conn, types)
-    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups, tab_inspect = st.tabs(
-        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet', '🔗 Inspiser eBay'])
+    tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups, tab_inspect, tab_europe = st.tabs(
+        ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet', '🔗 Inspiser eBay', '🌍 Europeiske markeder'])
 
     with tab_home:
         st.title('Vintage Wardrobe Watcher')
@@ -550,3 +551,68 @@ with connect() as conn:
                               json.dumps(details['aspects'], ensure_ascii=False), utc_now()))
                 conn.commit()
                 st.success('Annonse, selgerbeskrivelse og bildelenker er arkivert i SQLite.')
+
+    with tab_europe:
+        st.header('Europeiske vintage-markedsplasser')
+        st.caption('Tradera, Sellpy, Vestiaire Collective, Grailed, Vinted og Kleinanzeigen. '
+                   'Manuell import fungerer nå; automatisk uthenting krever separat, autorisert integrasjon.')
+        with st.form('european_import'):
+            eu_url = st.text_input('Annonse-URL', placeholder='https://www.tradera.com/item/343837/753582030/...')
+            eu_title = st.text_input('Annonsetittel')
+            eu_description = st.text_area('Selgerbeskrivelse og oppgitte mål')
+            eu_photos = st.text_area('Direkte bilde-URL-er (én https-lenke per linje)')
+            eu_price = st.number_input('Pris', min_value=0.0, value=0.0, step=10.0)
+            eu_currency = st.selectbox('Valuta', ['SEK', 'EUR', 'GBP', 'NOK', 'DKK'])
+            eu_target = st.selectbox('Garderobemål', list(names),
+                                     format_func=lambda wid: names[wid], key='europe_target')
+            eu_analyze = st.checkbox('Analyser bilder og beskrivelse med DeepSeek etter import')
+            submitted = st.form_submit_button('Importer annonse')
+        if submitted:
+            market = marketplaces.identify(eu_url)
+            urls = [u.strip() for u in eu_photos.splitlines() if u.strip()]
+            if not market:
+                st.error('Ukjent markedsplass eller ugyldig URL.')
+            elif not eu_title.strip():
+                st.error('Oppgi annonsetittel.')
+            elif any(not u.startswith('https://') or not safe_url(u) for u in urls):
+                st.error('Bilde-URL-ene må være gyldige https-lenker.')
+            else:
+                key = marketplaces.listing_key(eu_url)
+                manual_add(conn, eu_title.strip(), eu_url.strip(), '', float(eu_price),
+                           eu_currency, urls[0] if urls else '', eu_target, '')
+                if urls:
+                    store_photos(conn, key, urls[:24])
+                conn.execute('CREATE TABLE IF NOT EXISTS listing_source_snapshots '
+                             '(item_id TEXT PRIMARY KEY, description TEXT, aspects_json TEXT, saved_at TEXT)')
+                conn.execute('INSERT INTO listing_source_snapshots(item_id,description,aspects_json,saved_at) '
+                             'VALUES(?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET '
+                             'description=excluded.description,saved_at=excluded.saved_at',
+                             (key, eu_description, '{}', utc_now()))
+                conn.commit()
+                st.success(f'{market}: annonse importert og lagret med {len(urls[:24])} bildelenker.')
+                if eu_analyze:
+                    from dotenv import load_dotenv
+                    from watcher import save_analysis
+                    load_dotenv(CATALOG.parent / '.env')
+                    kind = measure.garment_type_for(next(x for x in items if x['id'] == eu_target))
+                    if kind not in measure.MEASUREMENTS:
+                        st.warning('Valgt garderobemål har ingen støttet måleprofil.')
+                    elif not measure.api_key():
+                        st.warning('DEEPSEEK_API_KEY mangler i .env; importen er likevel lagret.')
+                    else:
+                        with st.spinner('DeepSeek analyserer denne annonsen ...'):
+                            try:
+                                model = measure.model_name()
+                                readings, raw = measure.read_measurements(
+                                    urls[:24], kind, eu_title, eu_description, measure.api_key(), model)
+                                save_analysis(conn, key, urls[:24], readings, raw, model=model)
+                                conn.commit()
+                                st.success(f'Fant {len(readings)} mål. Lagret som ikke-verifiserte målinger.')
+                                if readings:
+                                    st.dataframe([{'Mål': x['name'], 'cm': x['value_cm'],
+                                                   'Kilde': x['source'], 'Sikkerhet': x['confidence']}
+                                                  for x in readings], use_container_width=True)
+                            except (measure.AnalysisError, measure.AuthError, requests.RequestException) as exc:
+                                save_analysis(conn, key, urls[:24], error=str(exc), model=measure.model_name())
+                                conn.commit()
+                                st.error(f'DeepSeek-analysen mislyktes: {exc}')
