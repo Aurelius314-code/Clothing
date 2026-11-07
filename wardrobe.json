@@ -76,12 +76,28 @@
       "enabled": true
     },
     {
+      "id": "W048",
+      "category": "Tailoring",
+      "name": "Corduroy or moleskin sport coat",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 1,
+      "optional": false,
+      "search_terms": [
+        "vintage corduroy sport coat",
+        "needlecord blazer jacket",
+        "moleskin sport coat jacket"
+      ],
+      "notes": "Fine or medium wale cord (about 8-14 wale) or dense brushed moleskin, 100% cotton; brown, olive or navy; soft shoulders; preferably no elbow patches",
+      "enabled": true
+    },
+    {
       "id": "W005",
       "category": "Tailoring",
       "name": "Heavy tweed sport coat",
       "target_quantity": 1,
       "owned_quantity": 0,
-      "priority": 1,
+      "priority": 2,
       "optional": false,
       "search_terms": [
         "vintage Harris tweed sport coat",
