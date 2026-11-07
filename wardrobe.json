@@ -108,6 +108,22 @@
       "enabled": true
     },
     {
+      "id": "W050",
+      "category": "Tailoring",
+      "name": "Single-breasted wool sport coat",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage wool sport coat",
+        "vintage wool flannel blazer",
+        "vintage hopsack blazer jacket"
+      ],
+      "notes": "Single-breasted, 2 or 3-roll-2 buttons; wool flannel, hopsack, serge or worsted, plain or patterned (check, herringbone, houndstooth), natural fibre outer fabric; navy, grey, charcoal, green or purple; soft shoulders",
+      "enabled": true
+    },
+    {
       "id": "W005",
       "category": "Tailoring",
       "name": "Heavy tweed sport coat",
