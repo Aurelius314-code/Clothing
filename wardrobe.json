@@ -92,6 +92,22 @@
       "enabled": true
     },
     {
+      "id": "W049",
+      "category": "Tailoring",
+      "name": "Double-breasted sport coat",
+      "target_quantity": 1,
+      "owned_quantity": 0,
+      "priority": 2,
+      "optional": false,
+      "search_terms": [
+        "vintage double breasted blazer",
+        "double breasted sport coat",
+        "double breasted corduroy blazer"
+      ],
+      "notes": "6x2 or 4x2; wool flannel, tweed, corduroy or moleskin, natural fibre outer fabric; navy, grey, brown or green; soft shoulders; chest measured buttoned",
+      "enabled": true
+    },
+    {
       "id": "W005",
       "category": "Tailoring",
       "name": "Heavy tweed sport coat",
