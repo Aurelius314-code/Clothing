@@ -272,21 +272,6 @@
       "enabled": true
     },
     {
-      "id": "W018",
-      "category": "Knitwear",
-      "name": "Fair Isle crewneck or slipover",
-      "target_quantity": 1,
-      "owned_quantity": 0,
-      "priority": 3,
-      "optional": false,
-      "search_terms": [
-        "vintage Fair Isle wool slipover",
-        "vintage Fair Isle jumper"
-      ],
-      "notes": "Crewneck or vest",
-      "enabled": true
-    },
-    {
       "id": "W019",
       "category": "Knitwear",
       "name": "Fine lambswool or cashmere V-neck",
@@ -668,7 +653,7 @@
       "category": "Knitwear",
       "name": "Plain chunky shawl-collar cardigan",
       "target_quantity": 1,
-      "owned_quantity": 0,
+      "owned_quantity": 1,
       "priority": 2,
       "optional": false,
       "search_terms": [
