@@ -14,6 +14,7 @@ import requests
 import streamlit as st
 
 import fit
+import material
 import measure
 import search_prefilter
 import group_priority
@@ -174,6 +175,7 @@ with connect() as conn:
 
     types = garment_types(conn, items)
     verdicts = fit.all_verdicts(conn, types)
+    fabrics = material.all_statuses(conn)
     tab_home, tab_wardrobe, tab_targets, tab_listings, tab_add, tab_fit, tab_search, tab_groups, tab_inspect, tab_europe = st.tabs(
         ['🏠 Oversikt', '🧥 Garderobe', '📐 Mine mål', '🔎 Annonser', '➕ Legg til annonse', '📏 Passform og historikk', '⚙️ Søkefiltre', '🏷️ Gruppeprioritet', '🔗 Inspiser eBay', '🌍 Europeiske markeder'])
 
@@ -306,6 +308,9 @@ with connect() as conn:
                                     format_func={'newest': 'Nyeste først', 'best': 'Beste treff først'}.get)
         delivery_filter = top_delivery.selectbox('Levering', ['all', 'NO', 'SE'], key='listing_delivery',
                                                  format_func=DELIVERY_FILTERS.get)
+        shown_fabrics = st.multiselect('Stoff (ytterstoffet, lest fra lappen og teksten)', list(material.STATUSES),
+                                       default=list(material.DEFAULT_SHOWN), format_func=material.LABELS.get,
+                                       key='listing_fabrics')
         conditions, args = [], []
         if filter_status != 'Alle':
             conditions.append("COALESCE(r.status,'unreviewed')=?"); args.append(filter_status)
@@ -317,8 +322,11 @@ with connect() as conn:
         candidates = [i for (i,) in conn.execute(
             f'SELECT l.item_id FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where} ORDER BY l.first_seen DESC', args)]
         unknown = fit.Verdict(fit.GREY, [], {})
-        selected = [i for i in candidates if verdicts.get(i, unknown).colour in colours]
-        hidden = len(candidates) - len(selected)
+        no_fabric = (material.UNKNOWN, '', [])
+        by_light = [i for i in candidates if verdicts.get(i, unknown).colour in colours]
+        selected = [i for i in by_light if fabrics.get(i, no_fabric)[0] in shown_fabrics]
+        hidden = len(candidates) - len(by_light)
+        hidden_fabric = len(by_light) - len(selected)
         if order == 'best':
             selected.sort(key=lambda i: fit.RANK[verdicts.get(i, unknown).colour])  # stable: newest first within a colour
         total = len(selected)
@@ -326,11 +334,13 @@ with connect() as conn:
         # One remembered page per filter. The widget's label and limits never change, so Streamlit keeps
         # the page when the count changes (for example after rejecting a listing); it only moves back
         # when the page no longer exists.
-        page_key = f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}_{delivery_filter}'
+        page_key = (f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}_{delivery_filter}'
+                    f'_{"-".join(sorted(shown_fabrics))}')
         if st.session_state.get(page_key, 1) > pages:
             st.session_state[page_key] = pages
         page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages) if pages > 1 else 1
-        hidden_text = f' · {hidden} skjult av trafikklys-filteret' if hidden else ''
+        hidden_text = (f' · {hidden} skjult av trafikklys-filteret' if hidden else '') + \
+                      (f' · {hidden_fabric} skjult av stoff-filteret' if hidden_fabric else '')
         st.caption((f'Side {page} av {pages} · ' if pages > 1 else '') + f'{total} annonser{hidden_text}')
         page_ids = selected[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
         rows = []
@@ -352,7 +362,7 @@ with connect() as conn:
                     FROM listing_measurements WHERE item_id IN ({marks})''', ids):
                 readings.setdefault(r[0], []).append(r[1:])
             analyses = {r[0]: r[1:] for r in conn.execute(
-                f'SELECT item_id,status,attempts,error FROM listing_analysis WHERE item_id IN ({marks})', ids)}
+                f'SELECT item_id,status,attempts,error,listing_text FROM listing_analysis WHERE item_id IN ({marks})', ids)}
             for item_id, photo_url in conn.execute(
                     f'SELECT item_id,url FROM listing_photos WHERE item_id IN ({marks}) ORDER BY item_id,position', ids):
                 photos.setdefault(item_id, []).append(photo_url)
@@ -367,6 +377,10 @@ with connect() as conn:
                     verdict = verdicts.get(iid, unknown)
                     reasons = '; '.join(verdict.reasons)
                     st.markdown(f'{fit.LABELS[verdict.colour]}' + (f' – {reasons}' if reasons else ''))
+                    fabric_status, fabric_text, fabric_sources = fabrics.get(iid, no_fabric)
+                    fabric_from = ', '.join(s.replace('photo', 'bilde').replace('text', 'teksten') for s in fabric_sources)
+                    st.markdown(f'Stoff: {material.LABELS[fabric_status]}' + (f' – {md(fabric_text)}' if fabric_text else '')
+                                + (f' ({fabric_from})' if fabric_from else ''))
                     shown_price = price_text(price, currency, options, current_bid, bid_count)
                     to_sweden = delivery == 'SE'
                     if ship is not None:
@@ -411,6 +425,9 @@ with connect() as conn:
                     shown = photos.get(iid) or ([measure.full_size_photo(img)] if img and safe_url(img) else [])
                     if shown and st.toggle(f'Vis bilder ({len(shown)})', key='ph' + iid):
                         st.image(shown, width=240, caption=[f'Bilde {n}' for n in range(1, len(shown) + 1)])
+                    seller_text = analysis[3] if analysis else ''
+                    if seller_text and st.toggle('Vis selgerens beskrivelse', key='tx' + iid):
+                        st.text(seller_text)
                     kind = types.get(iid)
                     if kind in measure.MEASUREMENTS:
                         saved = st.session_state.get('checked_saved')
@@ -646,7 +663,7 @@ with connect() as conn:
                             try:
                                 readings, raw = measure.read_measurements(
                                     source_photos, kind, item.get('title', ''), source_text, api_key, model)
-                                save_analysis(conn, item_id, source_photos, readings, raw, model=model)
+                                save_analysis(conn, item_id, source_photos, readings, raw, model=model, text=source_text)
                                 conn.commit()
                                 st.session_state['inspect_last_analysis'] = item_id
                                 st.success(f'Analyse ferdig: {len(readings)} mål funnet. Resultatet er lagret.')
@@ -741,7 +758,7 @@ with connect() as conn:
                                 model = measure.model_name()
                                 readings, raw = measure.read_measurements(
                                     urls[:24], kind, eu_title, eu_description, measure.api_key(), model)
-                                save_analysis(conn, key, urls[:24], readings, raw, model=model)
+                                save_analysis(conn, key, urls[:24], readings, raw, model=model, text=eu_description)
                                 conn.commit()
                                 st.success(f'Fant {len(readings)} mål. Lagret som ikke-verifiserte målinger.')
                                 if readings:
