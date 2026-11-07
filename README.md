@@ -35,6 +35,8 @@ Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to c
 
 `--only` narrows a search to some wardrobe targets, by ID (`W044`) or by category (`Knitwear`), comma-separated. A category searches the targets in it that you still want; a target named by ID is searched even if you already own enough of it, so you can look for one more without changing the plan.
 
+Blazer and sport coat searches also bring back coats. Before a result is stored under a jacket target, its title is checked (`garment_route.py`): duffle coats go to the duffle target, trench coats and raincoats to the raincoat target, overcoats to the overcoat target and waxed jackets to the waxed jacket target. Other outerwear (parkas, pea coats, field and utility jackets, cardigans, Swedish *jacka* and *kappa*) is left out unless the title also says blazer, sport coat or *kavaj*. Listings stored before this was added were sorted the same way once; those with no coat target were marked rejected. **Annonser** can be filtered by wardrobe target, and each listing shows which target it belongs to.
+
 ## Tradera
 
 Tradera is searched as well when `TRADERA_APP_ID` and `TRADERA_APP_KEY` are in `.env`. Both are free: make a developer account at https://api.tradera.com/register and create an application there. Tradera allows 10,000 calls a day per method, which is far more than one run uses.
