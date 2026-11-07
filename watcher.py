@@ -705,6 +705,9 @@ def main():
                         help='Where to search (default: every source with keys in .env)')
     parser.add_argument('--limit-per-query', type=int, default=40)
     parser.add_argument('--max-queries', type=int, default=0, help='0 means all enabled queries')
+    parser.add_argument('--only', metavar='IDS_OR_CATEGORIES',
+                        help='Search only these wardrobe targets or categories, comma-separated (for example W044 '
+                             'or Knitwear). A target named by ID is searched even if you already own enough of it.')
     parser.add_argument('--review', nargs=3, metavar=('ITEM_ID', 'STATUS', 'NOTES'), help='Set status: ' + '/'.join(REVIEW_STATUSES))
     parser.add_argument('--analyze-images', action='store_true',
                         help='Read measurements from listing photos with DeepSeek (each listing is analysed once)')
@@ -726,7 +729,14 @@ def main():
             return
         access_token = None
         filter_config = search_prefilter.load_config()
-        wardrobe = group_priority.search_order(catalog(), group_priority.load())
+        if args.only:
+            try:
+                wardrobe = group_priority.only(catalog(), group_priority.load(), args.only)
+            except ValueError as exc:
+                parser.error(str(exc))
+            print('Searching only:', ', '.join(f"{x['id']} {x['name']}" for x in wardrobe) or 'nothing still wanted')
+        else:
+            wardrobe = group_priority.search_order(catalog(), group_priority.load())
         search_ebay = args.source == 'ebay' or (args.source == 'all' and ebay_configured())
         if not args.report_only and search_ebay:
             access_token = token()
