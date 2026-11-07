@@ -2,21 +2,42 @@
 import os
 import sqlite3
 import tempfile
+import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
 DAILY_KEEP = 14
 WEEKLY_KEEP = 8
 MONTHLY_KEEP = 6
+STALE_TEMPORARY_SECONDS = 3600
 
 
 def backup_dir(db):
     return Path(db).parent / "backups"
 
 
+# "with sqlite3.connect(...)" only commits; it does not close the file. Windows cannot move or delete
+# a file that is still open (WinError 32), so every connection here is closed explicitly.
 def _integrity(path):
-    with sqlite3.connect(f"file:{Path(path).resolve().as_posix()}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{Path(path).resolve().as_posix()}?mode=ro", uri=True)) as conn:
         return conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def _copy(source_uri, target):
+    """Copy a database with SQLite's online backup API and close both files."""
+    with closing(sqlite3.connect(source_uri, uri=True)) as source, closing(sqlite3.connect(target)) as destination:
+        source.backup(destination)
+
+
+def _remove_stale_temporaries(directory, prefix):
+    """Temporary copies left by an interrupted or failed backup (an hour old: not one in progress)."""
+    for path in Path(directory).glob(f"{prefix}*.sqlite3"):
+        try:
+            if time.time() - path.stat().st_mtime > STALE_TEMPORARY_SECONDS:
+                path.unlink()
+        except OSError:
+            pass
 
 
 def create_backup(db, directory=None, *, force=False, now=None):
@@ -33,15 +54,14 @@ def create_backup(db, directory=None, *, force=False, now=None):
         if any(directory.glob(f"{db.stem}_{today}_*.sqlite3")):
             return None
     target = directory / f"{db.stem}_{stamp}.sqlite3"
+    _remove_stale_temporaries(directory, ".snapshot-")
     fd, temporary = tempfile.mkstemp(prefix=".snapshot-", suffix=".sqlite3", dir=directory)
     os.close(fd)
     try:
         # Read-only, unless a journal is left from an interrupted write: SQLite must roll it back
         # first, which needs write access (the app would do the same when it opens the file).
         read_only = "" if Path(str(db) + "-journal").exists() else "?mode=ro"
-        with sqlite3.connect(f"file:{db.resolve().as_posix()}{read_only}", uri=True) as source:
-            with sqlite3.connect(temporary) as destination:
-                source.backup(destination)
+        _copy(f"file:{db.resolve().as_posix()}{read_only}", temporary)
         if not _integrity(temporary):
             raise RuntimeError("SQLite integrity check failed for new backup")
         os.replace(temporary, target)
@@ -98,12 +118,11 @@ def restore_backup(db, snapshot):
         raise RuntimeError("Selected snapshot failed SQLite integrity check")
     if db.exists():
         create_backup(db, force=True)
+    _remove_stale_temporaries(db.parent, ".restore-")
     fd, temporary = tempfile.mkstemp(prefix=".restore-", suffix=".sqlite3", dir=db.parent)
     os.close(fd)
     try:
-        with sqlite3.connect(f"file:{snapshot.as_posix()}?mode=ro", uri=True) as source:
-            with sqlite3.connect(temporary) as destination:
-                source.backup(destination)
+        _copy(f"file:{snapshot.as_posix()}?mode=ro", temporary)
         if not _integrity(temporary):
             raise RuntimeError("Restored database failed integrity check")
         os.replace(temporary, db)

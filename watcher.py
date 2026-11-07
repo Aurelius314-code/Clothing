@@ -762,8 +762,8 @@ def main():
             print('Searching only:', ', '.join(f"{x['id']} {x['name']}" for x in wardrobe) or 'nothing still wanted')
         else:
             wardrobe = group_priority.search_order(catalog(), group_priority.load())
-        search_ebay = args.source == 'ebay' or (args.source == 'all' and ebay_configured())
-        if not args.report_only and search_ebay:
+        use_ebay = args.source == 'ebay' or (args.source == 'all' and ebay_configured())
+        if not args.report_only and use_ebay:
             access_token = token()
             stats, prefilter_stats = search_ebay(conn, access_token, wardrobe, args.limit_per_query, filter_config, args.max_queries)
             print('Search prefilter:', prefilter_stats)
