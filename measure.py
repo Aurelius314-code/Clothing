@@ -1,4 +1,5 @@
-"""Reads garment measurements from eBay and Tradera listing photos and text with DeepSeek's vision model.
+"""Reads garment measurements and fabric composition from eBay and Tradera listing photos and text
+with DeepSeek's vision model.
 
 The model only extracts what the listing shows. Converting to cm and comparing with your
 own measurements happens locally, so your measurements are never sent anywhere.
@@ -185,11 +186,26 @@ def build_prompt(garment_type, title, text, strict=False):
         'certainly all the way round.\n'
         '- When the text and a photo disagree, report the photo reading and mention the text value in the note.\n'
         '- Leave out any measurement the listing does not show. Never estimate one.\n\n'
+        'Also report the fabric composition, which the buyer uses to avoid synthetic fabrics:\n'
+        '- Read it from any care or composition label you can see in the photos (for example "100% WOOL", '
+        '"65% POLYESTER 35% COTTON", "SHELL: 100% COTTON LINING: 100% VISCOSE", "Pure New Wool"), and from the '
+        'item specifics and description (for example "Material: Polyester", "Outer Shell Material: Wool").\n'
+        '- One entry per fibre and part. "part" is "shell" for the outer fabric (also called main, body, outer, '
+        'face, self, ytterstoff or tyg), "lining" for linings and pocketing (fôr, foder, Futter, doublure), '
+        '"other" for trims, collars, ribbing, padding or filling. A composition with no part named is "shell".\n'
+        '- "fibre" is the English fibre name as written or translated (wool, lambswool, merino, cashmere, mohair, '
+        'alpaca, camel, silk, cotton, linen, viscose, modal, lyocell, cupro, acetate, polyester, nylon, acrylic, '
+        'elastane, ...). Swedish: ull, lammull, bomull, lin, siden, kashmir, viskos, polyamid, akryl, elastan.\n'
+        '- "percent" is the number on the label, or null when none is given (for example "Pure cotton").\n'
+        '- "source" is "photo N" for a label in a photo or "text". Report a label only when you can read it; '
+        'if it is blurred or cut off, leave it out. Never guess a fibre from how the fabric looks.\n\n'
         'Reply with JSON only, in this form:\n'
         '{"measurements": [{"name": "pit_to_pit", "value": 21.5, "unit": "in", "flat": true, '
-        '"source": "photo 3", "confidence": "high", "start_visible": true, "end_visible": true, "scale_legible": true, "evidence_status": "verified", "note": ""}]}\n'
+        '"source": "photo 3", "confidence": "high", "start_visible": true, "end_visible": true, "scale_legible": true, "evidence_status": "verified", "note": ""}], '
+        '"materials": [{"part": "shell", "fibre": "cotton", "percent": 100, "source": "photo 7", "confidence": "high"}]}\n'
         f'"name" is one of: {names}. "unit" is "in" or "cm". "source" is "photo N" or "text". '
-        '"confidence" is "high", "medium" or "low". If the listing shows none of them, reply {"measurements": []}.'
+        '"confidence" is "high", "medium" or "low". If the listing shows none of the measurements, '
+        'use "measurements": []; if it shows no composition, use "materials": [].'
     )
     return intro, task
 
@@ -253,6 +269,57 @@ def parse_readings(content, garment_type):
     return sorted(readings.values(), key=lambda r: ORDER.index(r['name']))
 
 
+PART_ALIASES = {'shell': 'shell', 'main': 'shell', 'body': 'shell', 'outer': 'shell', 'outer shell': 'shell',
+                'face': 'shell', 'self': 'shell', 'fabric': 'shell', 'ytterstoff': 'shell', 'tyg': 'shell',
+                'lining': 'lining', 'linings': 'lining', 'pocketing': 'lining', 'sleeve lining': 'lining',
+                'fôr': 'lining', 'for': 'lining', 'foder': 'lining', 'futter': 'lining', 'doublure': 'lining'}
+
+
+def parse_materials(content):
+    """The fabric composition from the model's JSON reply: [{part, fibre, percent, source, confidence, raw}].
+
+    Fibres are given their canonical names (material.fibre_name); a reply without a materials list,
+    or with an unreadable one, gives []. One entry per part and fibre, the most confident kept.
+    """
+    import material
+    try:
+        data = _json_object(content)
+    except AnalysisError:
+        return []
+    entries = data.get('materials') if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return []
+    rank = {'high': 3, 'medium': 2, 'low': 1}
+    found = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        raw = str(entry.get('fibre') or entry.get('material') or '').strip()
+        if not raw:
+            continue
+        part = str(entry.get('part') or 'shell').strip().lower()
+        part = PART_ALIASES.get(part, 'other' if part else 'shell')
+        percent = entry.get('percent')
+        if percent is not None:
+            try:
+                percent = float(str(percent).strip().rstrip('%'))
+            except ValueError:
+                percent = None
+            if percent is not None and not 0 <= percent <= 100:
+                continue
+        source = str(entry.get('source', '')).strip().lower()
+        photo = re.search(r'\d+', source)
+        source = f'photo {photo.group()}' if 'photo' in source and photo else 'text'
+        confidence = str(entry.get('confidence', '')).strip().lower()
+        confidence = confidence if confidence in rank else 'low'
+        fibre = material.fibre_name(raw)
+        key = (part, fibre)
+        if key not in found or rank[confidence] > rank[found[key]['confidence']]:
+            found[key] = {'part': part, 'fibre': fibre, 'percent': percent, 'source': source,
+                          'confidence': confidence, 'raw': raw[:60]}
+    return sorted(found.values(), key=lambda m: (material.PARTS.index(m['part']), -(m['percent'] or 0)))
+
+
 def _download(url):
     r = requests.get(url, headers=BROWSER_HEADERS, timeout=20)
     r.raise_for_status()
@@ -297,7 +364,7 @@ def read_measurements(photos, garment_type, title, text, api_key, model=DEFAULT_
             'model': model,
             'messages': [{'role': 'user', 'content': content}],
             'thinking': {'type': 'disabled'},
-            'max_tokens': 1500,
+            'max_tokens': 2000,
         })
     except requests.RequestException as exc:
         raise AnalysisError(f'could not reach DeepSeek ({type(exc).__name__})') from exc

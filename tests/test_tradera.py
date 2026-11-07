@@ -168,6 +168,6 @@ def test_analysis_fetches_full_tradera_listing(monkeypatch, keys):
         return [], '{"measurements": []}'
     monkeypatch.setattr(measure, 'read_measurements', fake_read)
     job = ('tradera:654970712', 'Harris Tweed kavaj', 'jacket', ['https://img.tradera.net/thumb.jpg'])
-    photos, readings, raw = watcher._analyze_one(job, None, 'deepseek-key', 'model')
+    photos, readings, raw, text = watcher._analyze_one(job, None, 'deepseek-key', 'model')
     assert photos == ['https://img.tradera.net/full.jpg'] and seen['garment_type'] == 'jacket'
-    assert 'Axelbredd 46 cm' in seen['text']
+    assert 'Axelbredd 46 cm' in seen['text'] and text == seen['text']

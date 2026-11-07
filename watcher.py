@@ -119,7 +119,7 @@ def _migrate_v04(conn):
 
 
 LISTING_TABLES = ('listings', 'price_history', 'matches', 'listing_reviews', 'listing_photos',
-                  'listing_analysis', 'listing_measurements', 'listing_source_snapshots')
+                  'listing_analysis', 'listing_measurements', 'listing_materials', 'listing_source_snapshots')
 
 
 def _migrate_v08(conn):
@@ -202,7 +202,15 @@ def connect():
     conn.execute('''CREATE TABLE IF NOT EXISTS fit_targets (
         garment_type TEXT NOT NULL, name TEXT NOT NULL, min_cm REAL, max_cm REAL,
         PRIMARY KEY(garment_type, name))''')
+    # Fabric composition read from labels and text, one row per part (shell, lining, other) and fibre.
+    conn.execute('''CREATE TABLE IF NOT EXISTS listing_materials (
+        item_id TEXT NOT NULL, part TEXT NOT NULL, fibre TEXT NOT NULL, percent REAL, source TEXT,
+        confidence TEXT, raw TEXT DEFAULT '', PRIMARY KEY(item_id, part, fibre))''')
     _add_column(conn, 'listing_measurements', 'verification_status', "TEXT NOT NULL DEFAULT 'legacy_unverified'")
+    # Listings analysed before fabric reading existed have materials_read 0 and are analysed once more.
+    _add_column(conn, 'listing_analysis', 'materials_read', 'INTEGER NOT NULL DEFAULT 0')
+    # The seller's item specifics and description as sent to DeepSeek, shown in the app.
+    _add_column(conn, 'listing_analysis', 'listing_text', "TEXT DEFAULT ''")
     _migrate_v04(conn)
     _migrate_v08(conn)
     conn.commit()
@@ -382,7 +390,8 @@ def garment_types(conn, items=None):
 
 
 def pending_analysis(conn, limit):
-    """Listings still to analyse, newest first: never analysed, or failed fewer than MAX_ATTEMPTS times.
+    """Listings still to analyse, newest first: never analysed, failed fewer than MAX_ATTEMPTS times,
+    or analysed before the fabric composition was read (analysed once more for that).
 
     Rejected listings and garments sold by size (accessories, shoes, basics) are left out.
     """
@@ -390,7 +399,8 @@ def pending_analysis(conn, limit):
     rows = conn.execute("""SELECT l.item_id, l.title, l.image_url FROM listings l
         LEFT JOIN listing_analysis a ON a.item_id=l.item_id
         LEFT JOIN listing_reviews r ON r.item_id=l.item_id
-        WHERE (a.item_id IS NULL OR (a.status='error' AND a.attempts < ?))
+        WHERE (a.item_id IS NULL OR (a.status='error' AND a.attempts < ?)
+               OR (a.status='ok' AND a.materials_read=0))
           AND COALESCE(r.status,'unreviewed') != 'rejected'
         ORDER BY l.first_seen DESC""", (MAX_ATTEMPTS,)).fetchall()
     jobs = []
@@ -406,7 +416,7 @@ def pending_analysis(conn, limit):
 
 
 def _analyze_one(job, access_token, key, model):
-    """Runs in a worker thread: fetch the full listing, then read it. Returns (photos, readings, raw)."""
+    """Runs in a worker thread: fetch the full listing, then read it. Returns (photos, readings, raw, text)."""
     item_id, title, garment_type, photos = job
     text = ''
     if access_token and item_id.startswith('v1|'):
@@ -426,11 +436,14 @@ def _analyze_one(job, access_token, key, model):
     if not photos and not text:
         raise measure.AnalysisError('no photos available (the listing may have ended)')
     readings, raw = measure.read_measurements(photos, garment_type, title, text, key, model)
-    return photos, readings, raw
+    return photos, readings, raw, text
 
 
-def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, model=''):
-    """Store one result. A failure never removes readings from an earlier successful analysis."""
+def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, model='', text=''):
+    """Store one result: measurements, fabric composition (read from raw) and the listing text.
+
+    A failure never removes readings or materials from an earlier successful analysis.
+    """
     store_photos(conn, item_id, photos)
     now = utc_now()
     if error:
@@ -444,10 +457,16 @@ def save_analysis(conn, item_id, photos, readings=None, raw='', error=None, mode
     conn.executemany("""INSERT INTO listing_measurements(item_id,name,value_cm,raw_value,raw_unit,flat,source,confidence,note,verification_status)
         VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,name) DO NOTHING""", [(item_id, r['name'], r['value_cm'], r['raw_value'], r['raw_unit'], int(r['flat']),
                                         r['source'], r['confidence'], r['note'], _unverified_status(r.get('source', ''))) for r in readings or []])
-    conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error,raw)
-        VALUES(?,'ok',?,1,?,?,'',?) ON CONFLICT(item_id) DO UPDATE SET status='ok', analyzed_at=excluded.analyzed_at,
-        attempts=listing_analysis.attempts+1, photo_count=excluded.photo_count, model=excluded.model, error='', raw=excluded.raw""",
-                 (item_id, now, len(photos), model, (raw or '')[:20000]))
+    conn.execute('DELETE FROM listing_materials WHERE item_id=?', (item_id,))
+    conn.executemany("""INSERT INTO listing_materials(item_id,part,fibre,percent,source,confidence,raw)
+        VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id,part,fibre) DO NOTHING""",
+                     [(item_id, m['part'], m['fibre'], m['percent'], m['source'], m['confidence'], m['raw'])
+                      for m in measure.parse_materials(raw)])
+    conn.execute("""INSERT INTO listing_analysis(item_id,status,analyzed_at,attempts,photo_count,model,error,raw,materials_read,listing_text)
+        VALUES(?,'ok',?,1,?,?,'',?,1,?) ON CONFLICT(item_id) DO UPDATE SET status='ok', analyzed_at=excluded.analyzed_at,
+        attempts=listing_analysis.attempts+1, photo_count=excluded.photo_count, model=excluded.model, error='', raw=excluded.raw,
+        materials_read=1, listing_text=excluded.listing_text""",
+                 (item_id, now, len(photos), model, (raw or '')[:20000], (text or '')[:8000]))
 
 
 def _unverified_status(source):
@@ -519,7 +538,7 @@ def analyze_pending(conn, access_token, limit=100, workers=4):
             item_id, title, _, photos = futures[future]
             prefix = f'  [{done}/{len(jobs)}] {title[:60]}'
             try:
-                used_photos, readings, raw = future.result()
+                used_photos, readings, raw, text = future.result()
             except measure.AuthError as exc:
                 stopped = str(exc)
                 pool.shutdown(wait=False, cancel_futures=True)
@@ -530,11 +549,13 @@ def analyze_pending(conn, access_token, limit=100, workers=4):
                 stats['failed'] += 1
                 print(f'{prefix}: FAILED - {error}')
             else:
-                save_analysis(conn, item_id, used_photos, readings, raw, model=model)
+                save_analysis(conn, item_id, used_photos, readings, raw, model=model, text=text)
                 stats['analyzed'] += 1
                 stats['with_measurements'] += bool(readings)
                 found = ', '.join(f"{r['name']} {r['value_cm']} cm" for r in readings) or 'no measurements shown'
-                print(f'{prefix}: {found}')
+                fabric = ', '.join(f"{m['percent']:g}% {m['fibre']}" if m['percent'] is not None else m['fibre']
+                                   for m in measure.parse_materials(raw) if m['part'] == 'shell') or 'fabric not shown'
+                print(f'{prefix}: {found} | {fabric}')
             conn.commit()
     conn.commit()
     if stopped:
@@ -567,6 +588,8 @@ def report(conn):
     for item_id, name, value_cm, source, confidence in conn.execute(
             'SELECT item_id,name,value_cm,source,confidence FROM listing_measurements'):
         readings.setdefault(item_id, []).append((name, value_cm, source, confidence))
+    import material
+    fabrics = material.all_statuses(conn)
     esc = lambda v: html.escape(str(v if v is not None else ''), quote=True)
     cards = []
     for (item_id, title, url, img, seller, price, currency, ship, ship_currency, options,
@@ -585,7 +608,9 @@ def report(conn):
             parts = [f"{name.replace('_', ' ')}{' (flat)' if name in measure.WIDTHS else ''} {value:.1f} cm"
                      f"{' ?' if confidence == 'low' else ''} [{source}]" for name, value, source, confidence in found]
             measured = f'<p class="m">Measured: {esc(" · ".join(parts))}</p>'
-        cards.append(f'<article><img loading="lazy" src="{esc(safe_img)}" alt=""><div><h3><a href="{esc(safe_url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a></h3><p><strong>{esc(price_text)}</strong>{esc(shipping_text)} · {esc(seller)} · {esc(status)}</p>{measured}<p>{esc(labels)}</p><small>First: {esc(first)} · Last: {esc(last)}{esc(relist)} · {esc(notes)}</small></div></article>')
+        fabric_status, fabric_text, _ = fabrics.get(item_id, (material.UNKNOWN, '', []))
+        fabric = f'<p>Stoff: {esc(material.LABELS[fabric_status])}{esc(" – " + fabric_text if fabric_text else "")}</p>'
+        cards.append(f'<article><img loading="lazy" src="{esc(safe_img)}" alt=""><div><h3><a href="{esc(safe_url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a></h3><p><strong>{esc(price_text)}</strong>{esc(shipping_text)} · {esc(seller)} · {esc(status)}</p>{measured}{fabric}<p>{esc(labels)}</p><small>First: {esc(first)} · Last: {esc(last)}{esc(relist)} · {esc(notes)}</small></div></article>')
     inventory = ''.join(f'<tr><td>{esc(x["category"])}</td><td>{esc(x["name"])}</td><td>{esc(x["owned_quantity"])}/{esc(x["target_quantity"])}</td><td>{esc(x["priority"])}</td></tr>' for x in items)
     page = ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>Vintage Wardrobe Watcher</title><style>{REPORT_STYLE}</style><h1>Vintage Wardrobe Watcher</h1>'

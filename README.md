@@ -28,8 +28,10 @@ With `--analyze-images`, each listing found for a jacket, coat, trousers, knitwe
 - DeepSeek reads the measurements for that type of garment (for example pit to pit, shoulders, sleeve and back length for a jacket), from the tape photos and the text. For each one it says which photo it came from, whether it was measured flat or all the way round, and how sure it is.
 - DeepSeek also says, for each photo reading, whether both ends of the tape and the scale are clearly visible. Readings where they aren't are marked uncertain. Set `STRICT_PHOTO_EVIDENCE=1` in `.env` to drop them instead.
 - The app converts everything to cm, with widths stored flat, and shows it on the listing in **Annonser**, next to the photos, with where it came from: *AI-estimat* (read from a photo) or *Oppgitt av selger* (from the text). Neither is verified, and uncertain readings are marked so you know which photo to check.
+- In the same request DeepSeek reads the fabric composition: from care and composition labels in the photos, and from the item specifics and description ("Material: Polyester"). Only the outer fabric counts; a polyester lining is fine. Each listing gets one of 🟢 *Naturfiber*, 🟡 *Med viskose e.l.*, 🔴 *Syntetisk* (any polyester, nylon, acrylic, elastane … in the outer fabric) or ⚪ *Stoff ukjent – sjekk lappen*. **Annonser** hides synthetic listings by default; change the *Stoff* filter to see them.
+- The seller's description and item specifics are saved with the analysis; **Vis selgerens beskrivelse** on the listing shows them.
 
-Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to change it). Listings already analysed are not sent again, rejected listings are skipped, and accessories, shoes and basics are left out because they are bought by size. A failed analysis is shown in the app and retried on the next run, up to 3 times. A wrong key or an empty DeepSeek balance stops the analysis with a message.
+Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to change it). Listings already analysed are not sent again (except once more for the fabric, if they were analysed before fabric reading was added), rejected listings are skipped, and accessories, shoes and basics are left out because they are bought by size. A failed analysis is shown in the app and retried on the next run, up to 3 times. A wrong key or an empty DeepSeek balance stops the analysis with a message.
 
 `--only` narrows a search to some wardrobe targets, by ID (`W044`) or by category (`Knitwear`), comma-separated. A category searches the targets in it that you still want; a target named by ID is searched even if you already own enough of it, so you can look for one more without changing the plan.
 
@@ -126,7 +128,7 @@ From the first DeepSeek version: its readings were lists of numbers from the tap
 - eBay API search that only returns sellers who ship to `EBAY_SHIP_TO_COUNTRY`, stores the cheapest shipping quote, and keeps auction bid changes out of the price history.
 - Tradera API search with Swedish search words per wardrobe target (`tradera.json`).
 - Optional Swedish address (`SWEDISH_PICKUP=1`): an extra eBay search for sellers who ship to Sweden, Swedish shipping on Tradera, and a delivery filter.
-- Measurements read from listing photos and text by DeepSeek, shown in the app and in `report.html`.
+- Measurements and fabric composition read from listing photos, labels and text by DeepSeek, shown in the app and in `report.html`; synthetic outer fabrics hidden by default.
 - Traffic light per listing against your own target ranges, based on measurements you have checked, with filtering and sorting by colour.
 - A benchmark and diagnostics for the photo reading in `eval/`.
 
