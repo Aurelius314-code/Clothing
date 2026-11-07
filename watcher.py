@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 import measure
 import search_prefilter
+import garment_route
 import group_priority
 import tradera
 
@@ -213,6 +214,7 @@ def connect():
     _add_column(conn, 'listing_analysis', 'listing_text', "TEXT DEFAULT ''")
     _migrate_v04(conn)
     _migrate_v08(conn)
+    _reroute_coats(conn)
     conn.commit()
     return conn
 
@@ -374,6 +376,31 @@ def ingest(conn, item, wardrobe_id=None, delivery=None):
 
 def catalog():
     return json.loads(CATALOG.read_text(encoding='utf-8'))['items']
+
+
+def _reroute_coats(conn, items=None):
+    """Once: coats and outer jackets that blazer searches stored under a jacket target.
+
+    A coat with a target of its own (duffle, trench, overcoat, waxed jacket) is moved there. The rest
+    leave the jacket target and are marked rejected, unless you have already reviewed them. New search
+    results are sorted the same way before they are stored (see garment_route).
+    """
+    if has_flag(conn, 'rerouted_coats_v1'):
+        return
+    kinds_by_id = garment_route.kinds(items if items is not None else catalog())
+    rows = conn.execute("""SELECT m.item_id, m.wardrobe_id, l.title FROM matches m
+        JOIN listings l ON l.item_id=m.item_id""").fetchall()
+    for item_id, wardrobe_id, title in rows:
+        target = garment_route.route(title, wardrobe_id, kinds_by_id)
+        if target == wardrobe_id:
+            continue
+        conn.execute('DELETE FROM matches WHERE item_id=? AND wardrobe_id=?', (item_id, wardrobe_id))
+        if target:
+            conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (item_id, target))
+        elif not conn.execute('SELECT 1 FROM matches WHERE item_id=?', (item_id,)).fetchone():
+            conn.execute("""INSERT INTO listing_reviews(item_id,status,notes) VALUES(?, 'rejected', ?)
+                ON CONFLICT(item_id) DO NOTHING""", (item_id, garment_route.REJECT_NOTE))
+    set_flag(conn, 'rerouted_coats_v1')
 
 
 # --- Reading measurements from photos -------------------------------------------------
@@ -640,8 +667,9 @@ def search_ebay(conn, access_token, wardrobe_items, limit_per_query=40, filter_c
     searches = [(x, q) for x in wardrobe_items for q in x['search_terms']]
     if max_queries:
         searches = searches[:max_queries]
-    stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
-    prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'already_analyzed': 0}
+    stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0, 'moved': 0}
+    prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'not_a_jacket': 0, 'already_analyzed': 0}
+    kinds_by_id = garment_route.kinds(catalog())
     for wardrobe_item, query in searches:
         options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
         server_options = options if marketplace is None else {**options, 'max_item_price': None}
@@ -652,12 +680,17 @@ def search_ebay(conn, access_token, wardrobe_items, limit_per_query=40, filter_c
                 if not search_prefilter.accept_item(item, options)[0]:
                     prefilter_stats['rejected'] += 1
                     continue
+                target = garment_route.route(item.get('title'), wardrobe_item['id'], kinds_by_id)
+                if target is None:
+                    prefilter_stats['not_a_jacket'] += 1
+                    continue
                 prefilter_stats['accepted'] += 1
                 existing_id = item.get('itemId')
                 if existing_id and conn.execute(
                         "SELECT 1 FROM listing_analysis WHERE item_id=? AND status='ok'", (existing_id,)).fetchone():
                     prefilter_stats['already_analyzed'] += 1
-                stats[ingest(conn, item, wardrobe_item['id'], delivery)] += 1
+                stats['moved'] += target != wardrobe_item['id']
+                stats[ingest(conn, item, target, delivery)] += 1
             conn.commit()
         except requests.RequestException as exc:
             print(f'API error for {query!r}: {exc}')
@@ -701,7 +734,9 @@ def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None,
     searches = tradera.searches(wardrobe_items)
     if max_queries:
         searches = searches[:max_queries]
-    stats = {'returned': 0, 'rejected': 0, 'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
+    stats = {'returned': 0, 'rejected': 0, 'not_a_jacket': 0, 'moved': 0,
+             'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
+    kinds_by_id = garment_route.kinds(catalog())
     for wardrobe_item, query, category in searches:
         options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
         try:
@@ -711,7 +746,12 @@ def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None,
                 if not search_prefilter.accept_item(item, options)[0]:
                     stats['rejected'] += 1
                     continue
-                stats[ingest(conn, item, wardrobe_item['id'], 'SE' if swedish_pickup() else None)] += 1
+                target = garment_route.route(item.get('title'), wardrobe_item['id'], kinds_by_id)
+                if target is None:
+                    stats['not_a_jacket'] += 1
+                    continue
+                stats['moved'] += target != wardrobe_item['id']
+                stats[ingest(conn, item, target, 'SE' if swedish_pickup() else None)] += 1
             conn.commit()
         except tradera.RateLimited as exc:
             print(f'Tradera search stopped: {exc}')

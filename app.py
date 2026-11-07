@@ -311,6 +311,13 @@ with connect() as conn:
         shown_fabrics = st.multiselect('Stoff (ytterstoffet, lest fra lappen og teksten)', list(material.STATUSES),
                                        default=list(material.DEFAULT_SHOWN), format_func=material.LABELS.get,
                                        key='listing_fabrics')
+        matched = {}
+        for item_id, wid in conn.execute('SELECT item_id, wardrobe_id FROM matches'):
+            matched.setdefault(item_id, []).append(wid)
+        in_use = {wid for wids in matched.values() for wid in wids}
+        target_choices = [wid for wid in names if wid in in_use] + sorted(in_use - set(names)) + [None]
+        shown_targets = st.multiselect('Garderobemål (tomt = alle)', target_choices, default=[], format_func=target_label,
+                                       key='listing_targets', placeholder='Alle garderobemål')
         conditions, args = [], []
         if filter_status != 'Alle':
             conditions.append("COALESCE(r.status,'unreviewed')=?"); args.append(filter_status)
@@ -321,6 +328,9 @@ with connect() as conn:
         where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
         candidates = [i for (i,) in conn.execute(
             f'SELECT l.item_id FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where} ORDER BY l.first_seen DESC', args)]
+        if shown_targets:
+            wanted_targets = set(shown_targets)
+            candidates = [i for i in candidates if wanted_targets & set(matched.get(i) or [None])]
         unknown = fit.Verdict(fit.GREY, [], {})
         no_fabric = (material.UNKNOWN, '', [])
         by_light = [i for i in candidates if verdicts.get(i, unknown).colour in colours]
@@ -335,7 +345,7 @@ with connect() as conn:
         # the page when the count changes (for example after rejecting a listing); it only moves back
         # when the page no longer exists.
         page_key = (f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}_{delivery_filter}'
-                    f'_{"-".join(sorted(shown_fabrics))}')
+                    f'_{"-".join(sorted(shown_fabrics))}_{"-".join(sorted(str(t) for t in shown_targets))}')
         if st.session_state.get(page_key, 1) > pages:
             st.session_state[page_key] = pages
         page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages) if pages > 1 else 1
@@ -396,7 +406,8 @@ with connect() as conn:
                     st.markdown(f'{shown_price} · {md(seller) or "Ukjent selger"} · {STATUS_LABELS.get(status, status)}')
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
                     source_name = 'Tradera' if iid.startswith(tradera.KEY_PREFIX) else 'eBay' if iid.startswith('v1|') else 'Lagt inn manuelt'
-                    st.caption(f'{source_name} · Først sett: {first} · Sist sett: {last}')
+                    belongs_to = ', '.join(target_label(wid) for wid in matched.get(iid) or [None])
+                    st.caption(f'{source_name} · {belongs_to} · Først sett: {first} · Sist sett: {last}')
                     if similar > 1: st.warning(f'{similar} annonser med samme selger og normalisert tittel – mulig relisting, ikke bekreftet.')
                     found = sorted(readings.get(iid, []), key=lambda r: measure.ORDER.index(r[0]))
                     analysis = analyses.get(iid)
