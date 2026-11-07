@@ -17,6 +17,7 @@ Copy `.env.example` to `.env` and fill in your eBay keys and/or Tradera keys, pl
 ```powershell
 python watcher.py                                   # search eBay and Tradera, then write report.html
 python watcher.py --source tradera                  # search only Tradera (or --source ebay)
+python watcher.py --only W044 --limit-per-query 20  # search only some targets (IDs or categories such as Knitwear)
 python watcher.py --analyze-images                  # search, then read measurements from new listings
 python watcher.py --report-only --analyze-images    # read measurements only, no new search
 ```
@@ -29,6 +30,8 @@ With `--analyze-images`, each listing found for a jacket, coat, trousers, knitwe
 - The app converts everything to cm, with widths stored flat, and shows it on the listing in **Annonser**, next to the photos, with where it came from: *AI-estimat* (read from a photo) or *Oppgitt av selger* (from the text). Neither is verified, and uncertain readings are marked so you know which photo to check.
 
 Each run analyses at most 100 listings, newest first (`--analyze-limit 200` to change it). Listings already analysed are not sent again, rejected listings are skipped, and accessories, shoes and basics are left out because they are bought by size. A failed analysis is shown in the app and retried on the next run, up to 3 times. A wrong key or an empty DeepSeek balance stops the analysis with a message.
+
+`--only` narrows a search to some wardrobe targets, by ID (`W044`) or by category (`Knitwear`), comma-separated. A category searches the targets in it that you still want; a target named by ID is searched even if you already own enough of it, so you can look for one more without changing the plan.
 
 ## Tradera
 
