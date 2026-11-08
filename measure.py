@@ -197,6 +197,8 @@ def build_prompt(garment_type, title, text, strict=False):
         'alpaca, camel, silk, cotton, linen, viscose, modal, lyocell, cupro, acetate, polyester, nylon, acrylic, '
         'elastane, ...). Swedish: ull, lammull, bomull, lin, siden, kashmir, viskos, polyamid, akryl, elastan.\n'
         '- "percent" is the number on the label, or null when none is given (for example "Pure cotton").\n'
+        '- A blend or mix with no breakdown ("Wool Blend", "cotton mix", "ullblandning") is not pure: report the '
+        'fibre named with "percent": null and add an entry with "fibre": "unknown" for the rest.\n'
         '- "source" is "photo N" for a label in a photo or "text". Report a label only when you can read it; '
         'if it is blurred or cut off, leave it out. Never guess a fibre from how the fabric looks.\n\n'
         'Reply with JSON only, in this form:\n'

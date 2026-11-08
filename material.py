@@ -71,6 +71,18 @@ def fibre_name(raw):
     return 'other'
 
 
+# "Wool Blend", "British wool mix", "ullblandning": one fibre named, the rest left unsaid (often polyester).
+BLEND = re.compile(r'(wool|cotton|cashmere|linen|silk|mohair|alpaca|ull|bomull|siden|lin)s?[ -]?'
+                   r'(blend|mix|blandning|mischung)|\b(blend|mix)(ed)? (of )?(wool|cotton)', re.IGNORECASE)
+
+
+def blend_unaccounted(rows, text):
+    """True when the listing calls the fabric a blend but the outer fabric read adds up to less than 95 %."""
+    if not text or not BLEND.search(text):
+        return False
+    return sum(percent or 0 for part, _, percent in rows if part == 'shell') < 95
+
+
 def kind(fibre):
     return FIBRES.get(fibre, (UNKNOWN, ''))[0]
 
@@ -106,12 +118,18 @@ def all_statuses(conn):
         rows.setdefault(item_id, []).append((part, fibre, percent))
         if source and part == 'shell':
             sources.setdefault(item_id, set()).add(source)
-    read = {item_id for (item_id,) in conn.execute(
-        "SELECT item_id FROM listing_analysis WHERE status='ok' AND materials_read=1")}
+    read, texts = set(), {}
+    for item_id, status, materials_read, listing_text in conn.execute(
+            'SELECT item_id,status,materials_read,listing_text FROM listing_analysis'):
+        if status == 'ok' and materials_read == 1:
+            read.add(item_id)
+        texts[item_id] = listing_text
     statuses = {}
     for (item_id,) in conn.execute('SELECT item_id FROM listings'):
         if item_id in rows:
             status, text = judge(rows[item_id])
+            if status == NATURAL and blend_unaccounted(rows[item_id], texts.get(item_id)):
+                status, text = UNKNOWN, text + ' + mer: selgeren skriver «blend» uten å si hva resten er'
         else:
             status, text = UNKNOWN, ('ikke oppgitt i annonsen' if item_id in read else 'ikke lest ennå')
         statuses[item_id] = (status, text, sorted(sources.get(item_id, ())))
