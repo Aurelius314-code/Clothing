@@ -91,3 +91,26 @@ def test_analysis_stores_materials_and_text_and_reanalyses_older_listings(tmp_pa
 def test_prompt_asks_for_the_composition():
     intro, task = measure.build_prompt('jacket', 'Corduroy blazer', 'Material: Cotton')
     assert '"materials"' in task and 'care or composition label' in task and 'Never guess a fibre' in task
+
+
+def test_a_blend_without_breakdown_is_not_natural(tmp_path, monkeypatch):
+    """The Orvis blazer: "Outer Shell Material: Wool Blend" was read as plain wool."""
+    assert material.blend_unaccounted([('shell', 'wool', None)], 'Outer Shell Material: Wool Blend\nFabric Type: Hopsack')
+    assert material.blend_unaccounted([('shell', 'wool', 60)], 'British wool mix')
+    assert material.blend_unaccounted([('shell', 'cotton', None)], 'Material: Bomullsblandning')
+    assert not material.blend_unaccounted([('shell', 'wool', 100)], 'Wool blend? No, 100% wool label in photo 6')
+    assert not material.blend_unaccounted([('shell', 'wool', None)], 'Material: Wool\nColour: Navy')
+    assert not material.blend_unaccounted([('shell', 'wool', None)], 'Grå/svart melerad kavaj')
+    monkeypatch.setattr(watcher, 'DB', tmp_path / 'test.sqlite3')
+    with watcher.connect() as conn:
+        for item_id in ('v1|1|0', 'v1|2|0'):
+            conn.execute("INSERT INTO listings(item_id,title,first_seen,last_seen) VALUES(?, 'Blazer', 'x', 'x')", (item_id,))
+        watcher.save_analysis(conn, 'v1|1|0', [], [], reply({'part': 'shell', 'fibre': 'wool', 'source': 'text'}),
+                              text='Outer Shell Material: Wool Blend')
+        watcher.save_analysis(conn, 'v1|2|0', [], [], reply({'part': 'shell', 'fibre': 'wool', 'source': 'text'}),
+                              text='Material: Wool')
+        statuses = material.all_statuses(conn)
+        assert statuses['v1|1|0'][0] == material.UNKNOWN and '«blend»' in statuses['v1|1|0'][1]
+        assert statuses['v1|2|0'][0] == material.NATURAL
+    intro, task = measure.build_prompt('jacket', 'Blazer', 'Outer Shell Material: Wool Blend')
+    assert '"fibre": "unknown"' in task
