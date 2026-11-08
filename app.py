@@ -17,6 +17,7 @@ import fit
 import material
 import measure
 import search_prefilter
+import ship_from
 import group_priority
 import listing_inspector
 import marketplaces
@@ -316,8 +317,12 @@ with connect() as conn:
             matched.setdefault(item_id, []).append(wid)
         in_use = {wid for wids in matched.values() for wid in wids}
         target_choices = [wid for wid in names if wid in in_use] + sorted(in_use - set(names)) + [None]
-        shown_targets = st.multiselect('Garderobemål (tomt = alle)', target_choices, default=[], format_func=target_label,
-                                       key='listing_targets', placeholder='Alle garderobemål')
+        target_col, origin_col = st.columns([3, 1])
+        shown_targets = target_col.multiselect('Garderobemål (tomt = alle)', target_choices, default=[],
+                                               format_func=target_label, key='listing_targets',
+                                               placeholder='Alle garderobemål')
+        origin = origin_col.selectbox('Sendes fra', list(ship_from.FILTERS), format_func=ship_from.FILTERS.get,
+                                      key='listing_origin')
         conditions, args = [], []
         if filter_status != 'Alle':
             conditions.append("COALESCE(r.status,'unreviewed')=?"); args.append(filter_status)
@@ -325,6 +330,9 @@ with connect() as conn:
             conditions.append("l.delivery_country='SE'")
         elif delivery_filter == 'NO':
             conditions.append("COALESCE(l.delivery_country,'') != 'SE'")
+        origin_condition, origin_args = ship_from.sql_condition(origin)
+        if origin_condition:
+            conditions.append(origin_condition); args.extend(origin_args)
         where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
         candidates = [i for (i,) in conn.execute(
             f'SELECT l.item_id FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id {where} ORDER BY l.first_seen DESC', args)]
@@ -345,12 +353,17 @@ with connect() as conn:
         # the page when the count changes (for example after rejecting a listing); it only moves back
         # when the page no longer exists.
         page_key = (f'listing_page_{filter_status}_{"-".join(sorted(colours))}_{order}_{delivery_filter}'
-                    f'_{"-".join(sorted(shown_fabrics))}_{"-".join(sorted(str(t) for t in shown_targets))}')
+                    f'_{"-".join(sorted(shown_fabrics))}_{"-".join(sorted(str(t) for t in shown_targets))}_{origin}')
         if st.session_state.get(page_key, 1) > pages:
             st.session_state[page_key] = pages
         page = min(int(st.number_input('Side', min_value=1, step=1, key=page_key)), pages) if pages > 1 else 1
         hidden_text = (f' · {hidden} skjult av trafikklys-filteret' if hidden else '') + \
                       (f' · {hidden_fabric} skjult av stoff-filteret' if hidden_fabric else '')
+        if origin != ship_from.ALL:
+            no_country = conn.execute('SELECT COUNT(*) FROM listings WHERE item_country IS NULL').fetchone()[0]
+            if no_country:
+                hidden_text += (f' · {no_country} uten kjent land er ikke med (landet hentes neste gang et søk '
+                                'finner dem)')
         st.caption((f'Side {page} av {pages} · ' if pages > 1 else '') + f'{total} annonser{hidden_text}')
         page_ids = selected[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
         rows = []
@@ -359,7 +372,7 @@ with connect() as conn:
               l.shipping_cost,l.shipping_currency,l.buying_options,l.first_seen,l.last_seen,
               COALESCE(r.status,'unreviewed'),COALESCE(r.notes,l.notes,''),
               (SELECT COUNT(*) FROM listings x WHERE x.fingerprint=l.fingerprint),l.current_bid,l.bid_count,
-              l.delivery_country,l.shipping_checked_at
+              l.delivery_country,l.shipping_checked_at,l.item_country
               FROM listings l LEFT JOIN listing_reviews r ON l.item_id=r.item_id
               WHERE l.item_id IN ({','.join('?' * len(page_ids))})''', page_ids)}
             rows = [by_id[i] for i in page_ids]
@@ -377,7 +390,7 @@ with connect() as conn:
                     f'SELECT item_id,url FROM listing_photos WHERE item_id IN ({marks}) ORDER BY item_id,position', ids):
                 photos.setdefault(item_id, []).append(photo_url)
         for (iid, title, url, img, seller, price, currency, ship, ship_currency, options,
-             first, last, status, notes, similar, current_bid, bid_count, delivery, shipping_checked) in rows:
+             first, last, status, notes, similar, current_bid, bid_count, delivery, shipping_checked, country) in rows:
             with st.container(border=True):
                 left, right = st.columns([1, 4])
                 with left:
@@ -407,7 +420,9 @@ with connect() as conn:
                     if url and safe_url(url): st.link_button('Åpne annonse', url)
                     source_name = 'Tradera' if iid.startswith(tradera.KEY_PREFIX) else 'eBay' if iid.startswith('v1|') else 'Lagt inn manuelt'
                     belongs_to = ', '.join(target_label(wid) for wid in matched.get(iid) or [None])
-                    st.caption(f'{source_name} · {belongs_to} · Først sett: {first} · Sist sett: {last}')
+                    sent_from = f'Sendes fra {ship_from.name(country)}' + ('' if not country or country in ship_from.EUROPE
+                                                                             else ' ✈️')
+                    st.caption(f'{source_name} · {sent_from} · {belongs_to} · Først sett: {first} · Sist sett: {last}')
                     if similar > 1: st.warning(f'{similar} annonser med samme selger og normalisert tittel – mulig relisting, ikke bekreftet.')
                     found = sorted(readings.get(iid, []), key=lambda r: measure.ORDER.index(r[0]))
                     analysis = analyses.get(iid)

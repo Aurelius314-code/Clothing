@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 import measure
 import search_prefilter
+import ship_from
 import garment_route
 import group_priority
 import tradera
@@ -169,6 +170,9 @@ def connect():
     had_delivery = 'delivery_country' in {row[1] for row in conn.execute('PRAGMA table_info(listings)')}
     _add_column(conn, 'listings', 'delivery_country', 'TEXT')
     _add_column(conn, 'listings', 'shipping_checked_at', 'TEXT')
+    # The seller's country (eBay's item location). Older eBay listings get it when a search finds them again.
+    _add_column(conn, 'listings', 'item_country', 'TEXT')
+    conn.execute("UPDATE listings SET item_country='SE' WHERE item_id LIKE 'tradera:%' AND item_country IS NULL")
     if not had_delivery:  # listings found by the eBay search before v0.8 were all searched as shipping to Norway
         conn.execute("UPDATE listings SET delivery_country='NO' WHERE item_id LIKE 'v1|%' AND COALESCE(buying_options,'') != ''")
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
@@ -324,10 +328,12 @@ def ingest(conn, item, wardrobe_id=None, delivery=None):
     if not item_id:
         return 'skipped'
     now = utc_now()
+    country = ship_from.country_of(item)
     if delivery == 'SE':
         known = conn.execute('SELECT delivery_country FROM listings WHERE item_id=?', (item_id,)).fetchone()
         if known and known[0] == 'NO':
-            conn.execute('UPDATE listings SET last_seen=? WHERE item_id=?', (now, item_id))
+            conn.execute('UPDATE listings SET last_seen=?, item_country=COALESCE(?, item_country) WHERE item_id=?',
+                         (now, country, item_id))
             if wardrobe_id:
                 conn.execute('INSERT OR IGNORE INTO matches(item_id,wardrobe_id) VALUES(?,?)', (item_id, wardrobe_id))
             return 'seen'
@@ -344,8 +350,8 @@ def ingest(conn, item, wardrobe_id=None, delivery=None):
         bid_count = None
     old = conn.execute('SELECT price,currency FROM listings WHERE item_id=?', (item_id,)).fetchone()
     conn.execute('''INSERT INTO listings(item_id,title,url,image_url,seller,price,currency,first_seen,last_seen,
-        fingerprint,buying_options,shipping_cost,shipping_currency,current_bid,bid_count,delivery_country)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        fingerprint,buying_options,shipping_cost,shipping_currency,current_bid,bid_count,delivery_country,item_country)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
         title=excluded.title,url=excluded.url,image_url=excluded.image_url,
         seller=excluded.seller,price=excluded.price,currency=excluded.currency,
         last_seen=excluded.last_seen,fingerprint=excluded.fingerprint,buying_options=excluded.buying_options,
@@ -355,9 +361,11 @@ def ingest(conn, item, wardrobe_id=None, delivery=None):
         shipping_currency=CASE WHEN excluded.shipping_cost IS NULL AND listings.item_id LIKE 'tradera:%'
             THEN listings.shipping_currency ELSE excluded.shipping_currency END,
         current_bid=excluded.current_bid,bid_count=excluded.bid_count,
-        delivery_country=COALESCE(excluded.delivery_country,listings.delivery_country)''',
+        delivery_country=COALESCE(excluded.delivery_country,listings.delivery_country),
+        item_country=COALESCE(excluded.item_country,listings.item_country)''',
         (item_id, title, item.get('itemWebUrl', ''), image_url, seller, price, currency, now, now,
-         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, current_bid, bid_count, delivery))
+         fingerprint(title, seller), buying_options, shipping_cost, shipping_currency, current_bid, bid_count, delivery,
+         country))
     if not listing_photos(conn, item_id):
         # The full photo list replaces these when the listing is analysed, so photo numbers stay stable.
         store_photos(conn, item_id, measure.photos_from_item(item))
