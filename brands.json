@@ -1,0 +1,1284 @@
+{
+  "meta": {
+    "version": "0.2.1",
+    "description": "Klassisk britisk vintage herremote - merker, nøkkelord og måleregler for Vintage Wardrobe Watcher",
+    "focus": "Naturfiber, eldre britisk håndverk (før ca. 2000), egnet for kaldt klima",
+    "units": "cm",
+    "unit_note": "Mål oppgitt i tommer konverteres til cm (x 2,54) før lagring og sammenligning.",
+    "tier_legend": {
+      "A": "Toppnivå - mest ekstra poeng",
+      "B": "Solid - litt ekstra poeng"
+    },
+    "field_legend": {
+      "names": "Første navn er visningsnavn, resten er alias og feilstavinger. Matches etter normalisering.",
+      "models": "Modellnavn som bare teller når merket også er funnet i annonsen.",
+      "require_any": "Merket teller bare hvis minst ett av ordene også står i annonsen.",
+      "boost_if_any": "Ekstra poeng hvis ett av ordene står i annonsen.",
+      "negative_models": "Modeller fra merket som gir minuspoeng.",
+      "era_markers": "Tegn som tidfester plagget.",
+      "retailer": "Forhandler eller rebrand - kvaliteten avhenger av hvem som faktisk laget plagget.",
+      "suggested": "Lagt til som forslag, sto ikke på den opprinnelige lista - vurder.",
+      "origin": "Landkode for merket."
+    },
+    "keyword_policy": "positive_keywords gir pluss, negative_keywords gir minus. Harde stopp skjer bare via excluded_brands.hard, matching.counterfeit_words og material_rules.",
+    "moved_out": "Lokasjoner, VOEC-grense og tollsatser er flyttet ut av denne fila - de hører hjemme i søke- og priskonfigurasjonen."
+  },
+
+  "matching": {
+    "normalize": {
+      "lowercase": true,
+      "ampersand_to_and": true,
+      "strip_punctuation": true,
+      "strip_diacritics": true,
+      "collapse_whitespace": true
+    },
+    "word_boundaries": true,
+    "negation_words": ["no", "not", "non", "without", "free of", "zero", "ingen", "inga", "inte", "utan", "fri från"],
+    "negation_window_words": 3,
+    "style_patterns": [
+      "{brand} style",
+      "{brand} type",
+      "{brand} look",
+      "{brand} inspired",
+      "not {brand}",
+      "similar to {brand}",
+      "like {brand}",
+      "a la {brand}",
+      "{brand} stil",
+      "i stil med {brand}",
+      "liknande {brand}"
+    ],
+    "style_patterns_note": "Mønstrene sjekkes rundt merkenavnet, ikke som løse ord - ellers treffer «like» også «like new».",
+    "counterfeit_words": ["replica", "fake", "copy", "imitation", "kopia"],
+    "brand_field_first": "Bruk eBays Brand-felt (localizedAspects) når det finnes, og tittelen som reserve.",
+    "origin_signals": {
+      "boost": ["made in England", "made in Scotland", "made in Great Britain", "made in UK", "made in Wales", "made in Ireland", "made in Northampton", "tillverkad i England", "tillverkad i Skottland"],
+      "penalty": ["made in China", "made in Bangladesh", "made in Cambodia"]
+    },
+    "unit_ranges": {
+      "note": "Bryst og liv kan være oppgitt flatt eller som omkrets. Verdier i overlappssonen krever enhetsmarkør eller et annet mål å sjekke mot.",
+      "pit_to_pit": {
+        "flat_in": [18, 28],
+        "flat_cm": [46, 72],
+        "circumference_in": [34, 56],
+        "circumference_cm": [86, 142],
+        "ambiguous": [46, 56]
+      },
+      "waist": {
+        "flat_in": [14, 24],
+        "flat_cm": [36, 61],
+        "circumference_in": [28, 48],
+        "circumference_cm": [71, 122],
+        "ambiguous": [36, 48]
+      },
+      "label_sizes": "Jakkestørrelser som 40R, 42L og 44S er brystomkrets i tommer."
+    }
+  },
+
+  "materials": {
+    "natural": ["wool", "lambswool", "merino", "geelong", "cashmere", "camel hair", "alpaca", "mohair", "shetland", "cotton", "linen", "silk", "leather", "suede", "shearling", "sheepskin", "horsehair", "natural rubber"],
+    "semi_synthetic": ["viscose", "rayon", "cupro", "bemberg", "acetate", "modal", "lyocell"],
+    "synthetic": ["polyester", "acrylic", "polyamide", "nylon", "elastane", "spandex", "lycra", "polyurethane", "pu", "polypropylene", "polycotton", "poly cotton"],
+    "synthetic_phrases": ["faux leather", "faux suede", "faux fur", "vegan leather", "pleather", "leatherette", "bonded leather", "man made"],
+    "composition_traps": ["cashmere touch", "cashmere feel", "wool look", "wool feel", "wool mix", "wool rich"],
+    "default_rules": {
+      "shell_min_natural_pct": 80,
+      "semi_synthetic_lining": "ok",
+      "synthetic_lining": "penalty",
+      "synthetic_phrase": "penalty",
+      "composition_trap": "penalty",
+      "unknown_composition": "vision"
+    },
+    "rules_note": "Sammensetningen leses med prosent og plassering (ytterstoff/fôr). Viskose og cupro er vanlig fôr i gode dresser og frakker og stoppes ikke.",
+    "sv": {
+      "wool": ["ull", "lammull", "merinoull", "ren ull"],
+      "cashmere": ["kashmir"],
+      "cotton": ["bomull"],
+      "linen": ["linne"],
+      "silk": ["siden"],
+      "leather": ["läder", "skinn"],
+      "suede": ["mocka"],
+      "sheepskin": ["fårskinn"],
+      "polyester": ["polyester"],
+      "acrylic": ["akryl"],
+      "polyamide": ["polyamid"],
+      "elastane": ["elastan"],
+      "viscose": ["viskos"]
+    },
+    "de": {
+      "wool": ["Wolle", "Schurwolle", "reine Schurwolle"],
+      "loden": ["Loden", "Walkloden", "Lodenmantel"]
+    }
+  },
+
+  "condition_flags": {
+    "en": ["moth", "moth hole", "moth damage", "hole", "holes", "nip", "nips", "fray", "frayed", "fraying", "repair", "repaired", "darn", "darned", "stain", "stained", "worn", "thinning", "split", "cracked", "pilling", "bobbling"],
+    "sv": ["mal", "malhål", "hål", "fläck", "fläckar", "slitage", "sliten", "lagad", "noppor"],
+    "note": "Gir condition_warning, ikke avvisning. Brukes med ordgrenser og nektelsessjekk - «no moth, no holes» og «buttonhole» skal ikke flagges."
+  },
+
+  "cloth_labels": {
+    "note": "Stofflapper gir poeng uansett merke - de redder ukjente skreddere og umerkede plagg.",
+    "labels": [
+      "Harris Tweed",
+      "Fox Brothers",
+      "Holland & Sherry",
+      "Dormeuil",
+      "Scabal",
+      "Abraham Moon",
+      "Brisbane Moss",
+      "Lovat Mill",
+      "Joshua Ellis",
+      "Taylor & Lodge",
+      "Hield",
+      "Smith Woollens",
+      "Huddersfield Fine Worsteds",
+      "Harrisons of Edinburgh",
+      "W. Bill",
+      "Porter & Harding",
+      "Loro Piana",
+      "Vitale Barberis Canonico",
+      "Ventile",
+      "Grenfell cloth"
+    ]
+  },
+
+  "excluded_brands": {
+    "hard": [
+      "Primark",
+      "Boohoo",
+      "BoohooMAN",
+      "Shein",
+      "Zara",
+      "H&M",
+      "ASOS",
+      "River Island",
+      "Topman",
+      "New Look",
+      "Matalan",
+      "F&F",
+      "George at Asda",
+      "Pull&Bear",
+      "Bershka",
+      "Jack & Jones",
+      "Superdry"
+    ],
+    "penalized": [
+      "Next",
+      "Ted Baker",
+      "Marks & Spencer",
+      "M&S",
+      "Burton",
+      "Ben Sherman",
+      "Moss Bros"
+    ],
+    "brand_field_only": ["Next", "Burton"],
+    "notes": [
+      "Første utkast - fyll på fra støyloggen.",
+      "«George» er skrevet som «George at Asda» for ikke å treffe George Cleverley.",
+      "«Next» og «Burton» matches bare mot Brand-feltet - «next day dispatch» og stedsnavn ville ellers gitt falske treff.",
+      "Burton og Ben Sherman hadde bedre eldre produksjon, derfor bare straff og ikke stopp.",
+      "Treff på St Michael overstyrer straffen for Marks & Spencer."
+    ]
+  },
+
+  "brands": {
+    "crockett_jones": {
+      "names": ["Crockett & Jones", "Crockett and Jones", "Crocket & Jones", "Crocket Jones", "Crockett Jones", "C&J"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "models": ["Pembroke", "Tetbury", "Chertsey"]
+    },
+    "cheaney": {
+      "names": ["Joseph Cheaney", "Cheaney", "Cheany", "Cheaneys"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "models": ["Pennine"]
+    },
+    "trickers": {
+      "names": ["Tricker's", "Trickers", "Tricker", "Trikers"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "models": ["Stow", "Bourton", "Malton"]
+    },
+    "churchs": {
+      "names": ["Church's", "Churchs", "Churches"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "models": ["Grafton", "Chetwynd", "Burwood", "Diplomat", "Consul"],
+      "era_markers": {
+        "insole_without": ["Milan"],
+        "meaning": "Før 1999 (før Prada) - sjekkes på bilde av innersålen i Vision-steget"
+      },
+      "note": "Shannon er utelatt som modell fordi den er polished binder, som står på negativlista for sko."
+    },
+    "loake_1880": {
+      "names": ["Loake 1880", "Loake"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "require_any": ["1880", "made in England", "Goodyear welted"],
+      "note": "Loake har også rimeligere linjer - bare 1880-linjen teller."
+    },
+    "alfred_sargent": {
+      "names": ["Alfred Sargent"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"]
+    },
+    "edward_green": {
+      "names": ["Edward Green"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "models": ["Dover", "Galway"]
+    },
+    "sanders": {
+      "names": ["Sanders", "Sanders & Sanders"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"]
+    },
+    "barker": {
+      "names": ["Barker", "Barker Shoes"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "boost_if_any": ["made in England", "Goodyear welted"]
+    },
+    "grenson": {
+      "names": ["Grenson", "Grensons"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "models": ["Fred"],
+      "boost_if_any": ["made in England"]
+    },
+    "lotus": {
+      "names": ["Lotus"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "require_any": ["Veldtschoen", "Veldschoen", "made in England"],
+      "note": "Navnet kolliderer med mye annet - teller bare sammen med Veldtschoen eller made in England."
+    },
+    "hoggs_of_fife": {
+      "names": ["Hoggs of Fife", "Hoggs"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes", "casual_and_country_jackets", "trousers"],
+      "require_any": ["leather", "tweed", "moleskin", "wool"]
+    },
+    "william_lennon": {
+      "names": ["William Lennon", "Wm Lennon"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "note": "Ikke bruk «Lennon» alene."
+    },
+    "solovair": {
+      "names": ["Solovair", "NPS Solovair"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"]
+    },
+    "hunter": {
+      "names": ["Hunter"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "require_any": ["made in Scotland"],
+      "note": "Vintage gummistøvler laget i Skottland. Nyere produksjon er flyttet ut av landet.",
+      "suggested": true
+    },
+    "john_lobb": {
+      "names": ["John Lobb"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "suggested": true
+    },
+    "gaziano_girling": {
+      "names": ["Gaziano & Girling", "Gaziano and Girling", "Gaziano Girling"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "suggested": true
+    },
+    "george_cleverley": {
+      "names": ["George Cleverley", "G.J. Cleverley", "Cleverley"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "suggested": true
+    },
+    "peal_co": {
+      "names": ["Peal & Co", "Peal and Co"],
+      "tier": "B",
+      "origin": "US",
+      "categories": ["winter_boots_and_shoes"],
+      "retailer": true
+    },
+    "shipton_heneage": {
+      "names": ["Shipton & Heneage", "Shipton and Heneage"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "retailer": true
+    },
+    "foster_son": {
+      "names": ["Foster & Son", "Foster and Son"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "retailer": true
+    },
+    "poulsen_skone": {
+      "names": ["Poulsen Skone", "Poulsen & Skone"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "retailer": true
+    },
+    "wildsmith": {
+      "names": ["Wildsmith"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes"],
+      "retailer": true
+    },
+    "paul_stuart": {
+      "names": ["Paul Stuart"],
+      "tier": "B",
+      "origin": "US",
+      "categories": ["winter_boots_and_shoes"],
+      "retailer": true
+    },
+
+    "dunn_co": {
+      "names": ["Dunn & Co", "Dunn and Co", "Dunn & Company", "Dunn and Company", "Dunn Co"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets", "suits", "blazers_and_sports_jackets"]
+    },
+    "burberry": {
+      "names": ["Burberrys", "Burberry", "Burbery", "Burberrys of London"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets"],
+      "boost_if_any": ["Burberrys", "made in England", "100% cotton", "cotton gabardine"],
+      "era_markers": {
+        "label_text": "Burberrys",
+        "meaning": "Før 1999 (logoen med s)"
+      },
+      "note": "Mange kopier - style- og kopiordene er ekstra viktige her."
+    },
+    "aquascutum": {
+      "names": ["Aquascutum", "Aquascutem", "Aquascutom", "Aqua Scutum"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets"],
+      "boost_if_any": ["made in England"],
+      "note": "Nyere produksjon er ofte laget utenfor UK."
+    },
+    "crombie": {
+      "names": ["Crombie"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"],
+      "note": "«Crombie» brukes også om frakkestilen - stol på merkelapp eller Brand-feltet."
+    },
+    "invertere": {
+      "names": ["Invertere"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"]
+    },
+    "gloverall": {
+      "names": ["Gloverall", "Glover All", "Glover-All"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"],
+      "boost_if_any": ["made in England"]
+    },
+    "grenfell": {
+      "names": ["Grenfell", "Grenfel"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets"]
+    },
+    "mackintosh": {
+      "names": ["Mackintosh"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"],
+      "boost_if_any": ["made in Scotland", "bonded cotton", "rubberised cotton"],
+      "note": "«Mackintosh» brukes også generelt om regnfrakker - stol på merkelapp eller Brand-feltet."
+    },
+    "magee": {
+      "names": ["Magee", "Magee 1866", "Magee of Donegal", "Magee Donegal"],
+      "tier": "A",
+      "origin": "IE",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets", "suits", "blazers_and_sports_jackets", "trousers"]
+    },
+    "chester_barrie": {
+      "names": ["Chester Barrie", "Chester Barry"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets"]
+    },
+    "austin_reed": {
+      "names": ["Austin Reed", "Austin Reeds"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets", "trousers"],
+      "boost_if_any": ["made in England"]
+    },
+    "daks": {
+      "names": ["Daks", "Simpson Daks", "Daks Simpson"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets", "trousers"],
+      "boost_if_any": ["made in England"]
+    },
+    "cordings": {
+      "names": ["Cordings", "Cordings of Piccadilly"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes", "overcoats_and_raincoats", "casual_and_country_jackets", "suits", "blazers_and_sports_jackets", "trousers", "shirts"],
+      "retailer": true
+    },
+    "chrysalis": {
+      "names": ["Chrysalis"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets"]
+    },
+    "montgomery": {
+      "names": ["Montgomery"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"],
+      "note": "Også et stilnavn på duffelcoats («Monty») - stol på merkelapp eller Brand-feltet."
+    },
+    "tibbett": {
+      "names": ["Tibbett"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"]
+    },
+    "hector_powe": {
+      "names": ["Hector Powe"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"]
+    },
+    "rodex": {
+      "names": ["Rodex"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats"]
+    },
+    "harrods": {
+      "names": ["Harrods"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets", "knitwear"],
+      "retailer": true,
+      "suggested": true
+    },
+    "hardy_amies": {
+      "names": ["Hardy Amies"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets"],
+      "boost_if_any": ["made in England"],
+      "suggested": true
+    },
+    "lodenfrey": {
+      "names": ["Lodenfrey", "Loden Frey", "Loden-Frey"],
+      "tier": "A",
+      "origin": "DE",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets"],
+      "note": "Ikke britisk, men loden er ren ull og laget for kulde. Vanlig hos tyske selgere.",
+      "suggested": true
+    },
+    "steinbock": {
+      "names": ["Steinbock"],
+      "tier": "A",
+      "origin": "AT",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets"],
+      "require_any": ["loden", "wool", "Wolle", "Schurwolle"],
+      "suggested": true
+    },
+    "geiger": {
+      "names": ["Geiger"],
+      "tier": "B",
+      "origin": "AT",
+      "categories": ["overcoats_and_raincoats", "casual_and_country_jackets", "knitwear"],
+      "require_any": ["loden", "wool", "Wolle", "Schurwolle"],
+      "suggested": true
+    },
+
+    "barbour": {
+      "names": ["Barbour", "Barbours"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "models": ["Beaufort", "Bedale", "Border", "Northumbria", "Solway Zipper", "Gamefair", "International", "Spey"],
+      "negative_models": ["Liddesdale"],
+      "boost_if_any": ["made in England", "two crest", "2 crest", "one crest"],
+      "era_markers": {
+        "label_text": "Antall kroner (crests) på merkelappen",
+        "meaning": "Færre kroner = eldre jakke"
+      },
+      "note": "Liddesdale er quiltet polyester."
+    },
+    "belstaff": {
+      "names": ["Belstaff", "Belstaf"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "models": ["Trialmaster", "Roadmaster"],
+      "require_any": ["Trialmaster", "Roadmaster", "made in England", "waxed cotton", "wax cotton"],
+      "note": "Nyere Belstaff er motemerke - bare eldre voksjakker teller."
+    },
+    "baracuta": {
+      "names": ["Baracuta", "Barracuta"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "models": ["G9", "G4"],
+      "boost_if_any": ["made in England"],
+      "note": "Mange G9 har ytterstoff i poly/bomull - avgjør om materialregelen skal gjelde her."
+    },
+    "lavenham": {
+      "names": ["Lavenham"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "note": "De klassiske quiltejakkene er ofte nylon med polyesterfyll og stoppes av materialregelen."
+    },
+    "musto": {
+      "names": ["Musto"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "require_any": ["tweed"]
+    },
+    "schoffel": {
+      "names": ["Schöffel", "Schoffel", "Schoeffel"],
+      "tier": "B",
+      "origin": "DE",
+      "categories": ["casual_and_country_jackets"],
+      "require_any": ["tweed"]
+    },
+    "private_white": {
+      "names": ["Private White V.C.", "Private White VC", "Private White"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets", "overcoats_and_raincoats"]
+    },
+    "hackett": {
+      "names": ["Hackett", "Hackett London"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes", "casual_and_country_jackets", "suits", "blazers_and_sports_jackets", "trousers", "shirts"],
+      "boost_if_any": ["made in England"]
+    },
+    "walker_slater": {
+      "names": ["Walker Slater"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets", "suits", "blazers_and_sports_jackets", "trousers"]
+    },
+    "john_partridge": {
+      "names": ["John Partridge"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "boost_if_any": ["made in England"]
+    },
+    "holland_holland": {
+      "names": ["Holland & Holland", "Holland and Holland"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets", "knitwear"],
+      "suggested": true
+    },
+    "purdey": {
+      "names": ["Purdey", "James Purdey"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets", "knitwear"],
+      "suggested": true
+    },
+    "hilltrek": {
+      "names": ["Hilltrek"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["casual_and_country_jackets"],
+      "note": "Ventile-plagg (tettvevd bomull) fra Skottland.",
+      "suggested": true
+    },
+    "filson": {
+      "names": ["Filson", "C.C. Filson"],
+      "tier": "A",
+      "origin": "US",
+      "categories": ["casual_and_country_jackets", "overcoats_and_raincoats", "trousers"],
+      "models": ["Mackinaw Cruiser", "Tin Cloth"],
+      "note": "Amerikansk, men Mackinaw-ull og tin cloth passer godt til kaldt klima.",
+      "suggested": true
+    },
+
+    "gieves_hawkes": {
+      "names": ["Gieves & Hawkes", "Gieves and Hawkes", "Gieves"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["overcoats_and_raincoats", "suits", "blazers_and_sports_jackets"]
+    },
+    "huntsman": {
+      "names": ["H. Huntsman & Sons", "H Huntsman", "Huntsman"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets", "overcoats_and_raincoats"],
+      "require_any": ["Savile Row", "bespoke", "H Huntsman"],
+      "note": "«Huntsman» alene er et vanlig ord for jaktjakker."
+    },
+    "henry_poole": {
+      "names": ["Henry Poole", "Henry Poole & Co"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets", "overcoats_and_raincoats"]
+    },
+    "anderson_sheppard": {
+      "names": ["Anderson & Sheppard", "Anderson and Sheppard"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets", "overcoats_and_raincoats"]
+    },
+    "richard_james": {
+      "names": ["Richard James"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets"],
+      "note": "Vanlig personnavn - kan gi treff på selgernavn."
+    },
+    "kilgour": {
+      "names": ["Kilgour", "Kilgour French Stanbury", "Kilgour French & Stanbury"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets"]
+    },
+    "ede_ravenscroft": {
+      "names": ["Ede & Ravenscroft", "Ede and Ravenscroft"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes", "suits", "blazers_and_sports_jackets", "trousers", "shirts"],
+      "retailer": true
+    },
+    "new_lingwood": {
+      "names": ["New & Lingwood", "New and Lingwood"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["winter_boots_and_shoes", "suits", "blazers_and_sports_jackets", "trousers", "shirts"],
+      "retailer": true
+    },
+    "simpson": {
+      "names": ["Simpson Piccadilly", "Simpson of Piccadilly", "Simpsons of Piccadilly", "Simpsons Piccadilly"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets", "overcoats_and_raincoats"]
+    },
+    "jaeger": {
+      "names": ["Jaeger"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets", "trousers", "knitwear", "overcoats_and_raincoats"],
+      "boost_if_any": ["made in England", "made in Scotland"]
+    },
+    "dege_skinner": {
+      "names": ["Dege & Skinner", "Dege and Skinner"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets"],
+      "suggested": true
+    },
+    "norton_sons": {
+      "names": ["Norton & Sons", "Norton and Sons"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets"],
+      "suggested": true
+    },
+    "davies_son": {
+      "names": ["Davies & Son", "Davies and Son"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets"],
+      "suggested": true
+    },
+    "edward_sexton": {
+      "names": ["Edward Sexton"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["suits", "blazers_and_sports_jackets"],
+      "suggested": true
+    },
+    "kent_curwen": {
+      "names": ["Kent & Curwen", "Kent and Curwen"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["knitwear", "blazers_and_sports_jackets"],
+      "boost_if_any": ["made in England"],
+      "suggested": true
+    },
+
+    "polo_ralph_lauren": {
+      "names": ["Polo Ralph Lauren", "Ralph Lauren", "Polo by Ralph Lauren"],
+      "tier": "B",
+      "origin": "US",
+      "categories": ["trousers"],
+      "models": ["Andrew", "Andrews", "Hammond", "Preston", "Philip"],
+      "model_details": {
+        "Andrew": "pleated, relaxed",
+        "Hammond": "pleated, relaxed",
+        "Preston": "flat front"
+      },
+      "note": "Svært mange annonser og mange kopier. Selgere fyller ofte ut Model- eller Product Line-feltet med modellnavnet - les det sammen med Brand. Philip er ikke bekreftet som RL-modell."
+    },
+    "peter_christian": {
+      "names": ["Peter Christian"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["trousers"]
+    },
+    "drakes": {
+      "names": ["Drake's", "Drakes", "Drake's London"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["trousers", "shirts"]
+    },
+    "barry_bricken": {
+      "names": ["Barry Bricken"],
+      "tier": "B",
+      "origin": "US",
+      "categories": ["trousers"]
+    },
+    "bills_khakis": {
+      "names": ["Bills Khakis", "Bill's Khakis"],
+      "tier": "B",
+      "origin": "US",
+      "categories": ["trousers"]
+    },
+    "st_michael": {
+      "names": ["St Michael", "St. Michael", "Saint Michael", "St Michael Marks & Spencer"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["trousers", "knitwear", "blazers_and_sports_jackets", "overcoats_and_raincoats"],
+      "boost_if_any": ["made in England", "made in Scotland", "100% wool", "lambswool"],
+      "note": "Treff her overstyrer straffen for Marks & Spencer."
+    },
+
+    "harley_of_scotland": {
+      "names": ["Harley of Scotland", "Harley Scotland"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "note": "Bare fullt navn - «Harley» alene treffer Harley-Davidson."
+    },
+    "jamiesons": {
+      "names": ["Jamieson's", "Jamiesons", "Jamieson's of Shetland", "Jamiesons of Shetland"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "note": "Antatt å være «Jam…» fra den avkuttede lista."
+    },
+    "johnstons_of_elgin": {
+      "names": ["Johnstons of Elgin", "Johnston's of Elgin", "Johnstons Elgin"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear", "overcoats_and_raincoats"],
+      "suggested": true
+    },
+    "pringle": {
+      "names": ["Pringle of Scotland", "Pringle"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "boost_if_any": ["made in Scotland"],
+      "suggested": true
+    },
+    "ballantyne": {
+      "names": ["Ballantyne", "Ballantyne Cashmere"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "boost_if_any": ["made in Scotland"],
+      "note": "Eldre plagg er laget i Skottland. Nyere produksjon er flyttet ut.",
+      "suggested": true
+    },
+    "lyle_scott": {
+      "names": ["Lyle & Scott", "Lyle and Scott"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "require_any": ["made in Scotland"],
+      "note": "Nyere Lyle & Scott er rimelig importvare - bare skotskproduserte plagg teller.",
+      "suggested": true
+    },
+    "william_lockie": {
+      "names": ["William Lockie", "Lockie"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+    "peter_scott": {
+      "names": ["Peter Scott"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+    "barrie_knitwear": {
+      "names": ["Barrie Knitwear"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "note": "Ikke bruk «Barrie» alene - kolliderer med Chester Barrie.",
+      "suggested": true
+    },
+    "john_smedley": {
+      "names": ["John Smedley", "Smedley"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+    "drumohr": {
+      "names": ["Drumohr"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "boost_if_any": ["made in Scotland"],
+      "suggested": true
+    },
+    "alan_paine": {
+      "names": ["Alan Paine"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "boost_if_any": ["made in England", "made in Scotland"],
+      "suggested": true
+    },
+    "braemar": {
+      "names": ["Braemar"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+    "le_tricoteur": {
+      "names": ["Le Tricoteur"],
+      "tier": "A",
+      "origin": "GG",
+      "categories": ["knitwear"],
+      "note": "Ekte Guernsey-gensere.",
+      "suggested": true
+    },
+    "guernsey_woollens": {
+      "names": ["Guernsey Woollens"],
+      "tier": "A",
+      "origin": "GG",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+    "inis_meain": {
+      "names": ["Inis Meáin", "Inis Meain"],
+      "tier": "A",
+      "origin": "IE",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+    "dale_of_norway": {
+      "names": ["Dale of Norway"],
+      "tier": "A",
+      "origin": "NO",
+      "categories": ["knitwear"],
+      "note": "Mye mønstret strikk - Fair Isle-straffen slår inn på det travleste.",
+      "suggested": true
+    },
+    "devold": {
+      "names": ["Devold", "Devold of Norway"],
+      "tier": "A",
+      "origin": "NO",
+      "categories": ["knitwear"],
+      "suggested": true
+    },
+
+    "turnbull_asser": {
+      "names": ["Turnbull & Asser", "Turnbull and Asser"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "suggested": true
+    },
+    "hilditch_key": {
+      "names": ["Hilditch & Key", "Hilditch and Key"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "suggested": true
+    },
+    "emma_willis": {
+      "names": ["Emma Willis"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "suggested": true
+    },
+    "budd": {
+      "names": ["Budd Shirtmakers", "Budd"],
+      "tier": "A",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "note": "Kort navn - vurder krav om «shirtmakers» eller «Piccadilly».",
+      "suggested": true
+    },
+    "harvie_hudson": {
+      "names": ["Harvie & Hudson", "Harvie and Hudson"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "suggested": true
+    },
+    "viyella": {
+      "names": ["Viyella"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["shirts", "knitwear"],
+      "boost_if_any": ["made in England"],
+      "note": "Viyella er også navnet på stoffet (ull/bomull).",
+      "suggested": true
+    },
+    "tm_lewin": {
+      "names": ["T.M. Lewin", "TM Lewin", "T M Lewin"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "boost_if_any": ["made in England"],
+      "suggested": true
+    },
+    "thomas_pink": {
+      "names": ["Thomas Pink", "Pink Shirtmaker"],
+      "tier": "B",
+      "origin": "GB",
+      "categories": ["shirts"],
+      "suggested": true
+    }
+  },
+
+  "categories": {
+    "winter_boots_and_shoes": {
+      "positive_keywords": [
+        "Veldtschoen",
+        "Veldschoen",
+        "Norwegian welt",
+        "zug grain",
+        "Scotch grain",
+        "country grain",
+        "waxy suede",
+        "rough out",
+        "commando sole",
+        "Ridgeway sole",
+        "Dainite",
+        "Dainite Ranger",
+        "Vibram",
+        "storm welt",
+        "Goodyear welted",
+        "Goodyear welt",
+        "hand welted",
+        "bellows tongue",
+        "shearling",
+        "made in Northampton"
+      ],
+      "negative_keywords": [
+        "bookbinder",
+        "polished binder",
+        "hi-shine",
+        "corrected grain",
+        "patent leather",
+        "cemented",
+        "glued",
+        "synthetic",
+        "man made upper",
+        "bonded leather"
+      ],
+      "category_models": ["Coniston", "Islay", "Snowdon", "Grasmere", "Rannoch", "Ross", "Chelsea 11"],
+      "category_models_note": "Modellnavn fra den opprinnelige lista som ikke er knyttet til et bestemt merke ennå. Teller bare når et skomerke også er funnet. «Grassmere» er rettet til «Grasmere».",
+      "measurements": ["uk_size", "eu_size", "us_size", "width_fitting", "outsole_length", "outsole_width", "last"],
+      "measurement_notes": "US-størrelse er ofte en halv til en hel størrelse over UK - les enheten før sammenligning.",
+      "material_rules": {
+        "upper_allowed": ["leather", "suede", "shearling", "natural rubber"]
+      },
+      "sv_terms": ["kängor", "boots", "skor", "herrskor", "läderskor", "gummistövlar"],
+      "notes": "Polished binder står som minus - det utelukker en del Church's (bl.a. Shannon). Fjern det hvis du vil ha med pensko."
+    },
+
+    "overcoats_and_raincoats": {
+      "positive_keywords": [
+        "British Warm",
+        "Balmacaan",
+        "raglan",
+        "Ulster",
+        "Chesterfield",
+        "covert coat",
+        "duffle coat",
+        "duffel coat",
+        "trench coat",
+        "trenchcoat",
+        "Trench 21",
+        "mac",
+        "melton",
+        "greatcoat",
+        "officer's greatcoat",
+        "loden",
+        "camel hair",
+        "Donegal tweed",
+        "100% wool",
+        "pure new wool",
+        "100% cotton",
+        "all cotton",
+        "cotton gabardine",
+        "gabardine",
+        "wool warmer",
+        "zip-in lining"
+      ],
+      "negative_keywords": [
+        "51% cotton",
+        "65% polyester",
+        "quilted polyester",
+        "wool blend",
+        "padded"
+      ],
+      "measurements": ["pit_to_pit", "shoulder_width", "back_length", "sleeve_length", "raglan_sleeve_from_collar"],
+      "material_rules": {
+        "shell_min_natural_pct": 80
+      },
+      "sv_terms": ["rock", "herrrock", "överrock", "ullrock", "regnrock", "trenchcoat", "duffel"],
+      "notes": "80 % gjør at meltonfrakker og dufflecoats med litt polyamid for slitestyrke slipper gjennom."
+    },
+
+    "casual_and_country_jackets": {
+      "positive_keywords": [
+        "waxed cotton",
+        "wax jacket",
+        "heavyweight wax",
+        "8oz",
+        "field jacket",
+        "shooting coat",
+        "shooting jacket",
+        "Norfolk jacket",
+        "chore jacket",
+        "moleskin jacket",
+        "tweed jacket",
+        "thornproof",
+        "Harrington",
+        "Mackinaw"
+      ],
+      "negative_keywords": [
+        "polyurethane",
+        "nylon shell",
+        "fleece",
+        "softshell",
+        "quilted polyester",
+        "slim fit"
+      ],
+      "measurements": ["pit_to_pit", "shoulder_width", "back_length", "sleeve_length"],
+      "material_rules": {
+        "shell_min_natural_pct": 80
+      },
+      "sv_terms": ["jacka", "vaxjacka", "tweedjacka", "fältjacka", "jaktjacka"]
+    },
+
+    "suits": {
+      "positive_keywords": [
+        "Savile Row",
+        "bespoke",
+        "Donegal tweed",
+        "Shetland tweed",
+        "flannel",
+        "worsted",
+        "hopsack",
+        "cavalry twill",
+        "herringbone",
+        "houndstooth",
+        "barleycorn",
+        "windowpane",
+        "three piece",
+        "double breasted",
+        "full canvas",
+        "fully canvassed",
+        "half canvas",
+        "inlay"
+      ],
+      "negative_keywords": [
+        "slim fit",
+        "skinny",
+        "super skinny",
+        "stretch",
+        "fused",
+        "polyester lining"
+      ],
+      "measurements": ["pit_to_pit", "shoulder_width", "back_length", "sleeve_length", "waist", "inseam", "front_rise", "thigh_width", "hem_opening"],
+      "material_rules": {
+        "shell_min_natural_pct": 90
+      },
+      "sv_terms": ["kostym", "tredelad kostym", "kavaj", "kostymbyxor"],
+      "notes": "Dresser trenger både jakke- og buksemål. «Inlay» betyr at det er sømmonn til å slippe ut."
+    },
+
+    "blazers_and_sports_jackets": {
+      "positive_keywords": [
+        "Savile Row",
+        "bespoke",
+        "sports jacket",
+        "sport coat",
+        "hacking jacket",
+        "Donegal tweed",
+        "Shetland tweed",
+        "flannel",
+        "hopsack",
+        "cavalry twill",
+        "herringbone",
+        "houndstooth",
+        "barleycorn",
+        "windowpane",
+        "patch pockets",
+        "full canvas",
+        "fully canvassed",
+        "half canvas"
+      ],
+      "negative_keywords": [
+        "slim fit",
+        "skinny",
+        "stretch",
+        "fused",
+        "polyester lining"
+      ],
+      "measurements": ["pit_to_pit", "shoulder_width", "back_length", "sleeve_length"],
+      "material_rules": {
+        "shell_min_natural_pct": 90
+      },
+      "sv_terms": ["kavaj", "tweedkavaj", "blazer"]
+    },
+
+    "trousers": {
+      "positive_keywords": [
+        "8 wale",
+        "heavy corduroy",
+        "moleskin",
+        "cavalry twill",
+        "whipcord",
+        "woollen flannel",
+        "heavy flannel",
+        "tweed trousers",
+        "high waist",
+        "high rise",
+        "pleated",
+        "single pleat",
+        "double pleat",
+        "forward pleat",
+        "turn ups",
+        "cuffed",
+        "side adjusters",
+        "brace buttons",
+        "inlay"
+      ],
+      "negative_keywords": [
+        "skinny",
+        "slim",
+        "low rise",
+        "stretch"
+      ],
+      "measurements": ["waist", "inseam", "front_rise", "thigh_width", "hem_opening"],
+      "material_rules": {
+        "shell_min_natural_pct": 90
+      },
+      "sv_terms": ["byxor", "manchesterbyxor", "ullbyxor", "kostymbyxor", "chinos"],
+      "notes": "Pleat-ordene sier noe om stil, ikke passform. La lårvidde og front rise i profilen avgjøre hvor mye stoff det er foran og på sidene."
+    },
+
+    "knitwear": {
+      "positive_keywords": [
+        "shawl collar",
+        "chunky knit",
+        "cable knit",
+        "Aran",
+        "Guernsey jumper",
+        "gansey",
+        "fisherman jumper",
+        "Shetland",
+        "lambswool",
+        "cashmere",
+        "geelong",
+        "merino",
+        "camel hair",
+        "saddle shoulder",
+        "fully fashioned",
+        "roll neck",
+        "hand knitted",
+        "hand knit",
+        "woolly pully",
+        "commando jumper",
+        "Hawick",
+        "pure new wool",
+        "100% wool"
+      ],
+      "negative_keywords": [
+        "Fair Isle"
+      ],
+      "measurements": ["pit_to_pit", "length", "sleeve_length", "shoulder_width"],
+      "material_rules": {
+        "shell_min_natural_pct": 90
+      },
+      "sv_terms": ["tröja", "stickad tröja", "ylletröja", "kofta", "polotröja"],
+      "notes": "Fair Isle står som minus fordi travle mønstre ikke er ønsket - ren smakssak, ikke kvalitet. Den opprinnelige strikk-delen ble kuttet etter «Harley of Scotland, Jam…»."
+    },
+
+    "shirts": {
+      "positive_keywords": [
+        "Sea Island cotton",
+        "two-fold",
+        "2-ply",
+        "two ply",
+        "tattersall",
+        "brushed cotton",
+        "flannel shirt",
+        "Jermyn Street",
+        "mother of pearl",
+        "split yoke",
+        "gusset"
+      ],
+      "negative_keywords": [
+        "non-iron",
+        "non iron",
+        "easy iron",
+        "wrinkle free",
+        "stretch",
+        "slim fit"
+      ],
+      "measurements": ["collar", "pit_to_pit", "sleeve_length", "back_length"],
+      "material_rules": {
+        "shell_min_natural_pct": 95
+      },
+      "sv_terms": ["skjorta", "flanellskjorta"],
+      "notes": "Ny kategori. Kragevidde oppgis nesten alltid i tommer (15.5) og må konverteres."
+    }
+  }
+}
