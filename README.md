@@ -39,6 +39,16 @@ Blazer and sport coat searches also bring back coats. Before a result is stored 
 
 Each listing also stores the seller's country (eBay's item location; Tradera is Sweden). **Annonser** shows it on every listing (✈️ marks countries outside Europe, where shipping to Norway is dearest) and can show only listings sent from Europe, the UK included, or only those from outside it. eBay listings stored before this get their country the next time a search finds them.
 
+## Brand blacklist
+
+`brands.json` lists brands, keywords and fabric rules for the wardrobe. So far the app uses one part of it: `excluded_brands.hard`, brands known for synthetic fabric or low quality (Primark, Zara, H&M …). Their listings are never sent to DeepSeek:
+
+- **Search:** an eBay or Tradera result whose title names one of these brands is not stored. The search counts show how many were stopped (`excluded_brand`).
+- **Before the analysis:** the full eBay listing's Brand field is checked too, so a listing that doesn't name the brand in its title is stopped before DeepSeek reads it.
+- **Stored listings** whose title names a blacklisted brand are marked rejected at the start of each run, with the note *Merke på svartelista: …*. A brand you add to the list therefore also clears old listings. Listings you have saved or marked purchased are left alone and analysed as before.
+
+Brands are matched as whole words, with case, accents, punctuation and *&*/*and* ignored. A brand named only as a comparison (*Zara style*, *not Primark*, *like Zara*; the patterns are under `matching.style_patterns`) doesn't count. Brands whose name is an ordinary word (`brand_field_only`, such as *New Look*) are matched only against the Brand field. Edit the list in `brands.json`; a missing file stops nothing. Tiers, penalties and keywords in the file are not used yet.
+
 ## Tradera
 
 Tradera is searched as well when `TRADERA_APP_ID` and `TRADERA_APP_KEY` are in `.env`. Both are free: make a developer account at https://api.tradera.com/register and create an application there. Tradera allows 10,000 calls a day per method, which is far more than one run uses.

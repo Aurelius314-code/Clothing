@@ -1,6 +1,6 @@
 {
   "meta": {
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "Klassisk britisk vintage herremote - merker, nøkkelord og måleregler for Vintage Wardrobe Watcher",
     "focus": "Naturfiber, eldre britisk håndverk (før ca. 2000), egnet for kaldt klima",
     "units": "cm",
@@ -172,11 +172,12 @@
       "Ben Sherman",
       "Moss Bros"
     ],
-    "brand_field_only": ["Next", "Burton"],
+    "brand_field_only": ["Next", "Burton", "New Look"],
     "notes": [
       "Første utkast - fyll på fra støyloggen.",
       "«George» er skrevet som «George at Asda» for ikke å treffe George Cleverley.",
-      "«Next» og «Burton» matches bare mot Brand-feltet - «next day dispatch» og stedsnavn ville ellers gitt falske treff.",
+      "«Next», «Burton» og «New Look» matches bare mot Brand-feltet - «next day dispatch», stedsnavn og «new look» som vanlige ord ville ellers gitt falske treff.",
+      "Hard-lista brukes av brands.py: treff stoppes i søket og før DeepSeek-analysen. Straff-lista brukes ikke ennå.",
       "Burton og Ben Sherman hadde bedre eldre produksjon, derfor bare straff og ikke stopp.",
       "Treff på St Michael overstyrer straffen for Marks & Spencer."
     ]
