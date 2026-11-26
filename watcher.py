@@ -16,6 +16,7 @@ from urllib.parse import quote, urlparse
 import requests
 from dotenv import load_dotenv
 
+import brands
 import measure
 import search_prefilter
 import ship_from
@@ -411,6 +412,32 @@ def _reroute_coats(conn, items=None):
     set_flag(conn, 'rerouted_coats_v1')
 
 
+def _reject_for_brand(conn, item_id, brand):
+    """Mark a listing rejected because of its brand. A review of your own (saved, purchased) is kept."""
+    conn.execute("""INSERT INTO listing_reviews(item_id,status,notes) VALUES(?, 'rejected', ?)
+        ON CONFLICT(item_id) DO UPDATE SET status='rejected',
+            notes=CASE WHEN COALESCE(listing_reviews.notes,'')='' THEN excluded.notes ELSE listing_reviews.notes END
+        WHERE listing_reviews.status='unreviewed'""", (item_id, brands.REJECT_NOTE.format(brand)))
+
+
+def reject_blacklisted(conn):
+    """Stored listings whose title names a brand on the blacklist in brands.json are marked rejected,
+    unless you have reviewed them. Runs every time, so a brand added to the list also clears old listings.
+    Returns how many were rejected."""
+    rows = conn.execute("""SELECT l.item_id, l.title FROM listings l
+        LEFT JOIN listing_reviews r ON r.item_id=l.item_id
+        WHERE COALESCE(r.status,'unreviewed')='unreviewed'""").fetchall()
+    blacklist = brands.blacklist()
+    rejected = 0
+    for item_id, title in rows:
+        brand = blacklist.match(title)
+        if brand:
+            _reject_for_brand(conn, item_id, brand)
+            rejected += 1
+    conn.commit()
+    return rejected
+
+
 # --- Reading measurements from photos -------------------------------------------------
 
 def garment_types(conn, items=None):
@@ -450,17 +477,25 @@ def pending_analysis(conn, limit):
     return jobs
 
 
-def _analyze_one(job, access_token, key, model):
-    """Runs in a worker thread: fetch the full listing, then read it. Returns (photos, readings, raw, text)."""
+def _analyze_one(job, access_token, key, model, check_brand=True):
+    """Runs in a worker thread: fetch the full listing, then read it. Returns (photos, readings, raw, text).
+
+    Raises brands.Excluded, before anything is sent to DeepSeek, when the full listing's Brand field
+    names a brand on the blacklist (check_brand=False for listings you have reviewed yourself).
+    """
     item_id, title, garment_type, photos = job
     text = ''
     if access_token and item_id.startswith('v1|'):
         try:
             full = get_item(item_id, access_token)
-            photos = measure.photos_from_item(full) or photos
-            text = measure.listing_text(full)
         except requests.RequestException:
             pass  # ended or unreachable listing: fall back to the photos stored from the search
+        else:
+            brand = brands.excluded_brand(title, brands.brand_field(full)) if check_brand else None
+            if brand:
+                raise brands.Excluded(brand)
+            photos = measure.photos_from_item(full) or photos
+            text = measure.listing_text(full)
     elif item_id.startswith(tradera.KEY_PREFIX) and tradera.credentials():
         try:
             full = tradera.get_item(item_id)
@@ -557,18 +592,20 @@ def save_checked_measurements(conn, item_id, garment_type, entries):
 def analyze_pending(conn, access_token, limit=100, workers=4):
     """Read measurements for up to `limit` listings that have not been analysed yet. Prints progress."""
     key, model = measure.api_key(), measure.model_name()
-    stats = {'analyzed': 0, 'with_measurements': 0, 'failed': 0}
+    stats = {'analyzed': 0, 'with_measurements': 0, 'failed': 0, 'excluded_brand': 0}
     if not key:
         print('Photo analysis skipped: add DEEPSEEK_API_KEY to .env')
         return stats
+    stats['excluded_brand'] += reject_blacklisted(conn)
     jobs = pending_analysis(conn, limit)
     if not jobs:
         print('Photo analysis: nothing new to analyse')
         return stats
     print(f'Analysing {len(jobs)} listing(s) with {model}...')
     stopped = None
+    reviewed = {row[0] for row in conn.execute("SELECT item_id FROM listing_reviews WHERE status IN ('saved','purchased')")}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_analyze_one, job, access_token, key, model): job for job in jobs}
+        futures = {pool.submit(_analyze_one, job, access_token, key, model, job[0] not in reviewed): job for job in jobs}
         for done, future in enumerate(as_completed(futures), 1):
             item_id, title, _, photos = futures[future]
             prefix = f'  [{done}/{len(jobs)}] {title[:60]}'
@@ -578,6 +615,10 @@ def analyze_pending(conn, access_token, limit=100, workers=4):
                 stopped = str(exc)
                 pool.shutdown(wait=False, cancel_futures=True)
                 break
+            except brands.Excluded as exc:
+                _reject_for_brand(conn, item_id, exc.brand)
+                stats['excluded_brand'] += 1
+                print(f'{prefix}: skipped - {exc.brand} is on the brand blacklist (brands.json)')
             except Exception as exc:  # one listing failing must not stop the rest
                 error = str(exc) if isinstance(exc, measure.AnalysisError) else f'{type(exc).__name__}: {exc}'
                 save_analysis(conn, item_id, photos, error=error, model=model)
@@ -676,7 +717,8 @@ def search_ebay(conn, access_token, wardrobe_items, limit_per_query=40, filter_c
     if max_queries:
         searches = searches[:max_queries]
     stats = {'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0, 'moved': 0}
-    prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'not_a_jacket': 0, 'already_analyzed': 0}
+    prefilter_stats = {'returned': 0, 'accepted': 0, 'rejected': 0, 'excluded_brand': 0, 'not_a_jacket': 0,
+                       'already_analyzed': 0}
     kinds_by_id = garment_route.kinds(catalog())
     for wardrobe_item, query in searches:
         options = search_prefilter.options_for(filter_config or {}, measure.garment_type_for(wardrobe_item))
@@ -687,6 +729,9 @@ def search_ebay(conn, access_token, wardrobe_items, limit_per_query=40, filter_c
                 prefilter_stats['returned'] += 1
                 if not search_prefilter.accept_item(item, options)[0]:
                     prefilter_stats['rejected'] += 1
+                    continue
+                if brands.excluded_brand(item.get('title'), item.get('brand')):
+                    prefilter_stats['excluded_brand'] += 1
                     continue
                 target = garment_route.route(item.get('title'), wardrobe_item['id'], kinds_by_id)
                 if target is None:
@@ -742,7 +787,7 @@ def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None,
     searches = tradera.searches(wardrobe_items)
     if max_queries:
         searches = searches[:max_queries]
-    stats = {'returned': 0, 'rejected': 0, 'not_a_jacket': 0, 'moved': 0,
+    stats = {'returned': 0, 'rejected': 0, 'excluded_brand': 0, 'not_a_jacket': 0, 'moved': 0,
              'new': 0, 'seen': 0, 'price_changed': 0, 'bid_changed': 0, 'skipped': 0}
     kinds_by_id = garment_route.kinds(catalog())
     for wardrobe_item, query, category in searches:
@@ -753,6 +798,9 @@ def search_tradera(conn, wardrobe_items, limit_per_query=40, filter_config=None,
                 item = tradera.to_listing(raw)
                 if not search_prefilter.accept_item(item, options)[0]:
                     stats['rejected'] += 1
+                    continue
+                if brands.excluded_brand(item.get('title')):
+                    stats['excluded_brand'] += 1
                     continue
                 target = garment_route.route(item.get('title'), wardrobe_item['id'], kinds_by_id)
                 if target is None:
@@ -802,6 +850,9 @@ def main():
             return
         access_token = None
         filter_config = search_prefilter.load_config()
+        cleared = reject_blacklisted(conn)
+        if cleared:
+            print(f'Brand blacklist (brands.json): {cleared} stored listing(s) marked rejected')
         if args.only:
             try:
                 wardrobe = group_priority.only(catalog(), group_priority.load(), args.only)
